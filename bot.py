@@ -90,6 +90,7 @@ class ModmailBot(commands.Bot):
             "cogs.threadmenu",
             "cogs.teachforth",
             "cogs.deskflow",
+            "cogs.intake",
         ]
         self._connected = None
         self.start_time = discord.utils.utcnow()
@@ -937,6 +938,9 @@ class ModmailBot(commands.Bot):
         """Processes messages sent to the bot."""
         blocked = await self._process_blocked(message)
         if blocked:
+            return
+        intake = self.get_cog("Intake")
+        if intake is not None and await intake.gate(message):
             return
         sent_emoji, blocked_emoji = await self.retrieve_emoji()
 

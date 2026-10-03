@@ -15,6 +15,8 @@ from urllib.parse import quote
 import aiohttp
 from aiohttp import web
 
+import teachforth_intake
+
 DATA = Path(os.environ.get("TEACHFORTH_DATA", "/var/lib/teachforth-helper"))
 HOST = os.environ.get("TEACHFORTH_PORTAL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("TEACHFORTH_PORTAL_PORT", "8795"))
@@ -388,14 +390,14 @@ async def desk(request):
             continue
         recipient = getattr(thread, "recipient", None)
         name = getattr(recipient, "name", None) or str(getattr(thread, "id", "Student"))
-        topic = str(thread.channel.name).split("-", 1)[0]
-        if topic not in {"ide", "github", "class", "account", "lesson", "other"}:
+        topic = (teachforth_intake.get(getattr(recipient, "id", "")).get("topic") or str(thread.channel.name).split("-", 1)[0])
+        if topic not in {"ide", "login", "github", "work", "lesson", "other"}:
             topic = "open"
         groups.setdefault(topic, []).append(
             f'<p><a href="/thread/{int(thread.channel.id)}"><strong>{e(name)}</strong></a> · {e(topic)}</p>'
         )
     listing = ""
-    for topic in ("ide", "github", "class", "account", "lesson", "other", "open"):
+    for topic in ("ide", "login", "github", "work", "lesson", "other", "open"):
         rows = groups.get(topic) or []
         if rows:
             listing += f"<h2>{e(topic.title())}</h2>{''.join(rows)}"
@@ -435,9 +437,11 @@ async def thread_page(request):
     csrf = e(user.get("csrf"))
     recipient = getattr(thread, "recipient", None)
     lookup = await dossier_html(await ide_lookup(user["id"], target=str(getattr(recipient, "id", "") or "")))
+    case = teachforth_intake.card_html(getattr(recipient, "id", ""), e)
     body = f"""
     {nav()}
     <div class="card"><h1>{e(getattr(recipient, 'name', 'Student'))}</h1>{''.join(messages) or '<p>No messages yet.</p>'}</div>
+    {case}
     {lookup}
     <div class="card">
       <form method="post" action="/thread/{channel_id}/reply">

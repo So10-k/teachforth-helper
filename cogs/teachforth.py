@@ -117,19 +117,6 @@ class TeachForth(commands.Cog):
         except discord.HTTPException:
             logger.warning("Slash followup failed for %s", name)
 
-    @commands.Cog.listener()
-    async def on_thread_ready(self, thread, creator, category, initial_message):
-        channel = getattr(thread, "channel", None)
-        if channel is None or initial_message is None or channel.id in self._hinted:
-            return
-        self._hinted.add(channel.id)
-        try:
-            await channel.send(
-                "Staff: `.teachforthlookup` pulls their IDE account, reports, and history. The helpdesk shows the same panel."
-            )
-        except discord.HTTPException:
-            return
-
     @commands.command(name="login")
     async def login(self, ctx, code: str = ""):
         """Register this Discord account. `.login CODE` also finishes a browser login."""
@@ -230,18 +217,8 @@ class TeachForth(commands.Cog):
                     for role in self._staff_roles(guild):
                         await self.bot.update_perms(PermissionLevel.SUPPORTER, role.id)
             await self.bot.update_perms("teachforthlookup", -1)
-            if not self.bot.config.get("thread_creation_menu_options"):
-                self.bot.config["thread_creation_menu_enabled"] = True
-                self.bot.config["thread_creation_menu_embed_title"] = "TeachForth Help"
-                self.bot.config["thread_creation_menu_embed_text"] = "What do you need? A teacher will see the topic you pick."
-                self.bot.config["thread_creation_menu_options"] = {
-                    "ide": {"label": "IDE", "description": "The editor, a project, or a save", "emoji": "💻"},
-                    "github": {"label": "GitHub", "description": "A repo, a login, or a sync", "emoji": "🔗"},
-                    "class": {"label": "Class", "description": "The server, class time, or a link", "emoji": "🏫"},
-                    "account": {"label": "Account", "description": "A login, a link, or a role", "emoji": "👤"},
-                    "lesson": {"label": "Lesson", "description": "A chapter, a skill, or what is next", "emoji": "📘"},
-                    "other": {"label": "Other", "description": "Something else", "emoji": "✉️"},
-                }
+            if self.bot.config.get("thread_creation_menu_enabled"):
+                self.bot.config["thread_creation_menu_enabled"] = False
                 await self.bot.config.update()
             await self.bot.change_presence(
                 activity=discord.Activity(type=discord.ActivityType.watching, name="TeachForth help")
