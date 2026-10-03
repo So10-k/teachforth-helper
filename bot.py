@@ -89,6 +89,7 @@ class ModmailBot(commands.Bot):
             "cogs.utility",
             "cogs.threadmenu",
             "cogs.teachforth",
+            "cogs.deskflow",
         ]
         self._connected = None
         self.start_time = discord.utils.utcnow()
@@ -454,11 +455,11 @@ class ModmailBot(commands.Bot):
                 self.config.remove("main_category_id")
                 logger.debug("MAIN_CATEGORY_ID was invalid, removed.")
             cat = discord.utils.get(self.modmail_guild.categories, name="Modmail")
+            if cat is None:
+                cat = discord.utils.get(self.modmail_guild.categories, name="TeachForth Help")
             if cat is not None:
                 self.config["main_category_id"] = cat.id
-                logger.debug(
-                    'No main category set explicitly, setting category "Modmail" as the main category.'
-                )
+                logger.debug("Using %s as the main category.", cat.name)
                 return cat
         return None
 
@@ -1986,6 +1987,15 @@ class ModmailBot(commands.Bot):
             )
         else:
             logger.error("Unexpected exception:", exc_info=exception)
+            cause = getattr(exception, "original", exception)
+            if isinstance(cause, discord.Forbidden):
+                text = "I don't have permission for that. For setup, re-invite me with Manage Channels, then run it again."
+            else:
+                text = "That command hit an error. I logged it."
+            try:
+                await context.send(embed=discord.Embed(color=self.error_color, description=text))
+            except Exception:
+                logger.debug("Could not send the command error.", exc_info=True)
 
     @tasks.loop(hours=1)
     async def post_metadata(self):

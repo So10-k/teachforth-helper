@@ -112,6 +112,21 @@ class Modmail(commands.Cog):
             return int(match.group(1))
         return None
 
+    def _setup_denied(self):
+        app_id = self.bot.user.id if self.bot.user else 1555983675810652301
+        url = (
+            "https://discord.com/oauth2/authorize"
+            f"?client_id={app_id}&permissions=268954704&scope=bot%20applications.commands"
+        )
+        return discord.Embed(
+            title="I can't set up the server",
+            description=(
+                "I need **Manage Channels**. "
+                f"[Re-invite me]({url}), then run `{self.bot.prefix}setup` again."
+            ),
+            color=self.bot.error_color,
+        )
+
     @commands.command()
     @trigger_typing
     @checks.has_permissions(PermissionLevel.OWNER)
@@ -133,10 +148,14 @@ class Modmail(commands.Cog):
         if self.bot.modmail_guild is None:
             embed = discord.Embed(
                 title="Error",
-                description="Modmail functioning guild not found.",
+                description="TeachForth server not found.",
                 color=self.bot.error_color,
             )
             return await ctx.send(embed=embed)
+
+        me = self.bot.modmail_guild.me
+        if me is None or not me.guild_permissions.manage_channels:
+            return await ctx.send(embed=self._setup_denied())
 
         overwrites = {
             self.bot.modmail_guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -159,25 +178,24 @@ class Modmail(commands.Cog):
                     logger.info("Granting %s access to Modmail category.", key.name)
                     overwrites[key] = discord.PermissionOverwrite(read_messages=True)
 
-        category = await self.bot.modmail_guild.create_category(name="Modmail", overwrites=overwrites)
-
-        await category.edit(position=0)
-
-        log_channel = await self.bot.modmail_guild.create_text_channel(name="bot-logs", category=category)
+        try:
+            category = await self.bot.modmail_guild.create_category(name="TeachForth Help", overwrites=overwrites)
+            await category.edit(position=0)
+            log_channel = await self.bot.modmail_guild.create_text_channel(name="help-logs", category=category)
+        except discord.Forbidden:
+            return await ctx.send(embed=self._setup_denied())
 
         embed = discord.Embed(
-            title="Friendly Reminder",
-            description=f"You may use the `{self.bot.prefix}config set log_channel_id "
-            "<channel-id>` command to set up a custom log channel, then you can delete this default "
-            f"{log_channel.mention} log channel.",
+            title="Help desk is ready",
+            description=f"Logs will land in {log_channel.mention}. "
+            f"Change that later with `{self.bot.prefix}config set log_channel_id <channel-id>`.",
             color=self.bot.main_color,
         )
 
         embed.add_field(
-            name="Thanks for using our bot!",
-            value="If you like what you see, consider giving the "
-            "[repo a star](https://github.com/modmail-dev/modmail) :star: and if you are "
-            "feeling extra generous, buy us coffee on [Buy Me A Coffee](https://buymeacoffee.com/modmaildev) :heart:!",
+            name="Tickets",
+            value=f"In a ticket, `{self.bot.prefix}teachforthlookup` shows the IDE account, reports, and history. "
+            "The same panel is on the helpdesk.",
         )
 
         embed.set_footer(text=f'Type "{self.bot.prefix}help" for a complete list of commands.')

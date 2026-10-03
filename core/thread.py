@@ -1013,10 +1013,10 @@ class Thread:
                 embed.add_field(name="Nickname", value=member.nick, inline=True)
             if role_names:
                 embed.add_field(name="Roles", value=role_names, inline=True)
-            embed.set_footer(text=footer)
+            embed.set_footer(text=f"{footer} · TeachForth")
         else:
             embed.set_author(name=str(user), icon_url=user.display_avatar.url, url=log_url)
-            embed.set_footer(text=f"{footer} • (not in main server)")
+            embed.set_footer(text=f"{footer} · TeachForth · not in the server")
 
         embed.description += ", ".join(user_info)
 
@@ -1903,7 +1903,7 @@ class Thread:
                     tag = str(get_top_role(author, self.bot.config["use_hoisted_top_role"]))
                 name = self.bot.config["anon_username"]
                 if name is None:
-                    name = "Anonymous"
+                    name = "TeachForth"
                 avatar_url = self.bot.config["anon_avatar_url"]
                 if avatar_url is None:
                     avatar_url = self.bot.get_guild_icon(guild=self.bot.guild, size=128)
@@ -2081,7 +2081,7 @@ class Thread:
                 embed.colour = self.bot.mod_color
                 # Anonymous reply sent in thread channel
                 if anonymous and isinstance(destination, discord.TextChannel):
-                    embed.set_footer(text="Anonymous Reply")
+                    embed.set_footer(text="TeachForth reply")
                 # Normal messages
                 elif not anonymous:
                     # Use configured mod_tag if provided; otherwise fallback to

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+import aiohttp
 from aiohttp import web
 
 DATA = Path(os.environ.get("TEACHFORTH_DATA", "/var/lib/teachforth-helper"))
@@ -104,7 +105,7 @@ def page(title, body, user=""):
 body {{ margin:0; font:16px/1.5 "Segoe UI", sans-serif; color:var(--ink); background:radial-gradient(1200px 500px at 10% -10%, #f3e6ff, transparent), var(--bg); }}
 header {{ display:flex; justify-content:space-between; align-items:center; padding:22px 28px; }}
 a {{ color:var(--purple); }}
-main {{ width:min(880px, calc(100% - 32px)); margin:0 auto 48px; }}
+main {{ width:min(980px, calc(100% - 32px)); margin:0 auto 48px; }}
 .card {{ background:#fff; border:1px solid var(--line); border-radius:18px; padding:22px; margin:14px 0; box-shadow:0 10px 30px #7a1fa308; }}
 h1 {{ font-size:32px; line-height:1.15; margin:0 0 8px; }}
 h2 {{ font-size:18px; margin:0 0 8px; }}
@@ -381,15 +382,33 @@ async def register(request):
 async def desk(request):
     user = require_staff(request)
     bot = request.app["bot"]
-    rows = []
+    groups = {}
     for thread in list(bot.threads):
         if not getattr(thread, "ready", False) or thread.channel is None:
             continue
         recipient = getattr(thread, "recipient", None)
         name = getattr(recipient, "name", None) or str(getattr(thread, "id", "Student"))
-        rows.append(f'<p><a href="/thread/{int(thread.channel.id)}"><strong>{e(name)}</strong></a> · open</p>')
-    listing = "\n".join(rows) or "<p>No open conversations. A student message in Discord will show up here.</p>"
-    body = f'<div class="card"><h1>Open</h1>{listing}</div><div class="card"><p class="row"><a class="button ghost" href="/logs">Old logs</a> <a class="button ghost" href="/logout">Sign out</a></p></div>'
+        topic = str(thread.channel.name).split("-", 1)[0]
+        if topic not in {"ide", "github", "class", "account", "lesson", "other"}:
+            topic = "open"
+        groups.setdefault(topic, []).append(
+            f'<p><a href="/thread/{int(thread.channel.id)}"><strong>{e(name)}</strong></a> · {e(topic)}</p>'
+        )
+    listing = ""
+    for topic in ("ide", "github", "class", "account", "lesson", "other", "open"):
+        rows = groups.get(topic) or []
+        if rows:
+            listing += f"<h2>{e(topic.title())}</h2>{''.join(rows)}"
+    listing = listing or "<p>No open conversations. A student message in Discord will show up here.</p>"
+    guild = bot.modmail_guild
+    me = guild.me if guild else None
+    can_setup = bool(me and me.guild_permissions.manage_channels)
+    category = getattr(bot.main_category, "name", None) or "not created"
+    setup = "ready" if can_setup else "needs Manage Channels. Run .setup in Discord after re-inviting the bot."
+    body = f"""
+    {nav("desk")}
+    <div class="card"><h1>Open tickets</h1>{listing}</div>
+    <div class="card"><h2>Desk</h2><p>Category: {e(category)}. Prefix <code>.</code>. Setup is {e(setup)}</p></div>"""
     return web.Response(text=page("Desk", body, user.get("name")), content_type="text/html")
 
 
@@ -414,8 +433,12 @@ async def thread_page(request):
             messages.append(f'<div class="msg"><b>{e(who)}</b>{e(text)}</div>')
     messages.reverse()
     csrf = e(user.get("csrf"))
+    recipient = getattr(thread, "recipient", None)
+    lookup = await dossier_html(await ide_lookup(user["id"], target=str(getattr(recipient, "id", "") or "")))
     body = f"""
-    <div class="card"><h1>{e(getattr(thread.recipient, 'name', 'Student'))}</h1>{''.join(messages) or '<p>No messages yet.</p>'}</div>
+    {nav()}
+    <div class="card"><h1>{e(getattr(recipient, 'name', 'Student'))}</h1>{''.join(messages) or '<p>No messages yet.</p>'}</div>
+    {lookup}
     <div class="card">
       <form method="post" action="/thread/{channel_id}/reply">
         <input type="hidden" name="csrf" value="{csrf}">
@@ -480,7 +503,7 @@ async def logs_page(request):
                 rows.append(f'<p><a href="/logs/{e(key)}">{e(recipient)}</a></p>')
     except Exception:
         rows = []
-    body = f'<div class="card"><h1>Logs</h1>{"".join(rows) or "<p>No closed logs yet.</p>"}</div>'
+    body = f'{nav("logs")}<div class="card"><h1>Logs</h1>{"".join(rows) or "<p>No closed logs yet.</p>"}</div>'
     return web.Response(text=page("Logs", body, user.get("name")), content_type="text/html")
 
 
@@ -513,6 +536,278 @@ async def health(_request):
     return web.json_response({"ok": True})
 
 
+def nav(active=""):
+    items = [("desk", "Open"), ("lookup", "Lookup"), ("snippets", "Snippets"), ("blocked", "Blocked"), ("logs", "Logs")]
+    links = []
+    for path, label in items:
+        kind = "button" if path == active else "button ghost"
+        links.append(f'<a class="{kind}" href="/{path}">{label}</a>')
+    links.append('<a class="button ghost" href="/logout">Sign out</a>')
+    return f'<p class="row">{"".join(links)}</p>'
+
+
+def class_secret():
+    path = Path(os.environ.get("TEACHFORTH_DISCORD_SECRET_FILE", "/var/lib/teachforth-discord/secret"))
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def helpdesk_secret():
+    try:
+        return (DATA / "internal-secret").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+async def ide_lookup(actor_id, target="", query=""):
+    secret = class_secret()
+    if not secret or not str(actor_id).isdigit():
+        return 0, {"error": "Class is off"}
+    params = {"discordId": str(actor_id)}
+    if target:
+        params["target"] = str(target)
+    elif query:
+        params["q"] = query
+    else:
+        return 400, {"error": "Need a person"}
+    base = os.environ.get("TEACHFORTH_CLASS_URL", "https://74-248-20-108.sslip.io").rstrip("/")
+    qs = "&".join(f"{key}={quote(value)}" for key, value in params.items())
+    try:
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{base}/api/discord/dossier?{qs}", headers={"x-teachforth-discord": secret}) as res:
+                data = await res.json(content_type=None)
+                return res.status, data if isinstance(data, dict) else {}
+    except (aiohttp.ClientError, TimeoutError):
+        return 0, {"error": "Class is off"}
+
+
+async def slash_answer(body):
+    secret = helpdesk_secret()
+    if not secret:
+        return 0, {}
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                os.environ.get("TEACHFORTH_SLASH_URL", "http://127.0.0.1:8794/internal/command"),
+                json=body,
+                headers={"x-teachforth-secret": secret},
+            ) as res:
+                data = await res.json(content_type=None)
+                return res.status, data if isinstance(data, dict) else {}
+    except (aiohttp.ClientError, TimeoutError):
+        return 0, {}
+
+
+def dossier_lines(status, data):
+    if status == 0:
+        return [("IDE", "Class is off, so the account panel is waiting.")]
+    if status == 404:
+        return [("IDE", "The staff account running this lookup is not linked. Use /link first.")]
+    if status == 403:
+        return [("IDE", "You cannot open that account.")]
+    if status != 200:
+        return [("IDE", scrub(data.get("error") or "That lookup did not answer."))]
+    if data.get("choices"):
+        names = ", ".join(scrub(item.get("name") or "") for item in data["choices"][:8])
+        return [("Which person?", names or "No match.")]
+    if data.get("linked") is False:
+        return [("IDE", f"Discord {data.get('discordId') or ''} is not linked to an IDE account.")]
+    person = data.get("person") or {}
+    github = f"GitHub @{person.get('githubLogin')}" if person.get("githubLinked") else "GitHub is not connected"
+    lines = [(
+        person.get("name") or "Account",
+        f"{person.get('role') or 'unknown'} · {github} · {person.get('email') or 'no email'}",
+    )]
+    courses = ", ".join(data.get("courses") or []) or "none"
+    chapters = ", ".join(item.get("name") or "" for item in data.get("chapters") or []) or "none"
+    lines.append(("School", f"Courses: {courses}. Chapters: {chapters}."))
+    projects = data.get("projects") or []
+    if projects:
+        lines.append(("Projects", "\n".join(
+            f"{item.get('title')} · {item.get('language')} · {item.get('updatedAt') or ''}" for item in projects[:6]
+        )))
+    else:
+        lines.append(("Projects", "None yet."))
+    reports = data.get("reports") or []
+    lines.append(("Reports", "\n".join(
+        f"{item.get('author')}: {item.get('body')}" for item in reports[:5]
+    ) or "None yet."))
+    skills = data.get("skills") or []
+    if skills:
+        lines.append(("Skills", "\n".join(
+            f"{item.get('course')} {item.get('module')} · {item.get('level')}" for item in skills[:6]
+        )))
+    pairs = data.get("pairs") or []
+    if pairs:
+        lines.append(("Pairs", "\n".join(
+            f"{item.get('block')} · {item.get('teacher')} with {item.get('student')}" for item in pairs[:6]
+        )))
+    history = data.get("history") or []
+    lines.append(("History", "\n".join(
+        f"{item.get('action')} · {item.get('actor') or 'system'} · {item.get('detail') or ''}" for item in history[:8]
+    ) or "None yet."))
+    return lines
+
+
+def dossier_embeds(status, data, person=None):
+    color = 0x7A1FA3
+    embeds = []
+    if person is not None:
+        created = discord_age(person)
+        embeds.append(discord_embed(str(person), f"Discord ID `{person.id}`\nAccount created {created}", color))
+    for title, text in dossier_lines(status, data):
+        embeds.append(discord_embed(title, text, color))
+    return embeds[:10]
+
+
+def discord_age(person):
+    created = getattr(person, "created_at", None)
+    if created is None:
+        return "unknown"
+    return created.strftime("%b %d, %Y")
+
+
+def discord_embed(title, text, color):
+    return discord_embed_dict(title, text, color)
+
+
+def discord_embed_dict(title, text, color):
+    import discord
+
+    return discord.Embed(title=scrub(title)[:200], description=scrub(text)[:4000], color=color)
+
+
+async def dossier_html(result):
+    status, data = result
+    blocks = []
+    for title, text in dossier_lines(status, data):
+        body = "<br>".join(e(line) for line in str(text).splitlines()) or "<p>None.</p>"
+        blocks.append(f'<div class="card"><h2>{e(title)}</h2><p>{body}</p></div>')
+    return "".join(blocks)
+
+
+async def lookup_page(request):
+    user = require_staff(request)
+    query = scrub(request.query.get("q") or "")[:80]
+    result = ""
+    if query:
+        result = await dossier_html(await ide_lookup(user["id"], query=query))
+    body = f"""
+    {nav("lookup")}
+    <div class="card"><h1>Account lookup</h1>
+      <form method="get">
+        <label for="q">Name, email, or Discord ID</label>
+        <input id="q" name="q" value="{e(query)}" maxlength="80" required>
+        <p><button type="submit">Look up</button></p>
+      </form>
+    </div>
+    {result}"""
+    return web.Response(text=page("Lookup", body, user.get("name")), content_type="text/html")
+
+
+async def snippets_page(request):
+    user = require_staff(request)
+    bot = request.app["bot"]
+    rows = sorted((bot.config.get("snippets") or {}).items())
+    listing = "".join(f"<p><strong>.{e(name)}</strong><br>{e(value)}</p>" for name, value in rows[:40]) or "<p>No snippets yet.</p>"
+    csrf = e(user.get("csrf"))
+    body = f"""
+    {nav("snippets")}
+    <div class="card"><h1>Snippets</h1>{listing}</div>
+    <div class="card">
+      <form method="post" action="/snippets">
+        <input type="hidden" name="csrf" value="{csrf}">
+        <label for="name">Name</label>
+        <input id="name" name="name" maxlength="40" pattern="[a-z0-9-]+" required>
+        <label for="value">Reply</label>
+        <textarea id="value" name="value" maxlength="1800" required></textarea>
+        <p><button type="submit">Save snippet</button></p>
+      </form>
+      <form method="post" action="/snippets/delete">
+        <input type="hidden" name="csrf" value="{csrf}">
+        <label for="delete">Delete</label>
+        <input id="delete" name="name" maxlength="40" pattern="[a-z0-9-]+" required>
+        <p><button class="ghost" type="submit">Delete</button></p>
+      </form>
+    </div>"""
+    return web.Response(text=page("Snippets", body, user.get("name")), content_type="text/html")
+
+
+async def snippets_save(request):
+    user = require_staff(request)
+    form = await request.post()
+    check_csrf(request, user, form)
+    name = str(form.get("name") or "").strip().lower()
+    value = scrub(form.get("value") or "")[:1800]
+    if not re.fullmatch(r"[a-z0-9-]{1,40}", name) or not value:
+        return web.Response(text=page("Snippet", '<div class="card"><p class="err">Use a short lowercase name and a reply.</p></div>'), content_type="text/html", status=400)
+    bot = request.app["bot"]
+    if bot.get_command(name):
+        return web.Response(text=page("Snippet", '<div class="card"><p class="err">That name is already a command.</p></div>'), content_type="text/html", status=400)
+    snippets = dict(bot.config.get("snippets") or {})
+    snippets[name] = value
+    bot.config["snippets"] = snippets
+    await bot.config.update()
+    raise web.HTTPFound("/snippets")
+
+
+async def snippets_delete(request):
+    user = require_staff(request)
+    form = await request.post()
+    check_csrf(request, user, form)
+    name = str(form.get("name") or "").strip().lower()
+    bot = request.app["bot"]
+    snippets = dict(bot.config.get("snippets") or {})
+    snippets.pop(name, None)
+    bot.config["snippets"] = snippets
+    await bot.config.update()
+    raise web.HTTPFound("/snippets")
+
+
+async def blocked_page(request):
+    user = require_staff(request)
+    bot = request.app["bot"]
+    rows = sorted((bot.config.get("blocked") or {}).items())
+    listing = "".join(f"<p><code>{e(user_id)}</code> · {e(reason)}</p>" for user_id, reason in rows[:40]) or "<p>Nobody is blocked.</p>"
+    csrf = e(user.get("csrf"))
+    body = f"""
+    {nav("blocked")}
+    <div class="card"><h1>Blocked</h1>{listing}</div>
+    <div class="card">
+      <form method="post" action="/blocked">
+        <input type="hidden" name="csrf" value="{csrf}">
+        <label for="id">Discord ID</label>
+        <input id="id" name="user_id" pattern="[0-9]{{17,20}}" required>
+        <label for="reason">Reason</label>
+        <input id="reason" name="reason" maxlength="180" required>
+        <p class="row"><button type="submit" name="action" value="block">Block</button> <button class="ghost" type="submit" name="action" value="unblock">Unblock</button></p>
+      </form>
+    </div>"""
+    return web.Response(text=page("Blocked", body, user.get("name")), content_type="text/html")
+
+
+async def blocked_save(request):
+    user = require_staff(request)
+    form = await request.post()
+    check_csrf(request, user, form)
+    user_id = str(form.get("user_id") or "")
+    if not re.fullmatch(r"\d{17,20}", user_id):
+        return web.Response(status=400, text="Missing")
+    bot = request.app["bot"]
+    blocked = dict(bot.config.get("blocked") or {})
+    if form.get("action") == "unblock":
+        blocked.pop(user_id, None)
+    else:
+        blocked[user_id] = scrub(form.get("reason") or "Blocked from the helpdesk")[:180]
+    bot.config["blocked"] = blocked
+    await bot.config.update()
+    raise web.HTTPFound("/blocked")
+
+
 def build_app(bot):
     app = web.Application()
     app["bot"] = bot
@@ -527,6 +822,12 @@ def build_app(bot):
         web.get("/oauth/callback", oauth_callback),
         web.post("/internal/register", register),
         web.get("/desk", desk),
+        web.get("/lookup", lookup_page),
+        web.get("/snippets", snippets_page),
+        web.post("/snippets", snippets_save),
+        web.post("/snippets/delete", snippets_delete),
+        web.get("/blocked", blocked_page),
+        web.post("/blocked", blocked_save),
         web.get("/thread/{channel_id}", thread_page),
         web.post("/thread/{channel_id}/{action}", thread_action),
         web.get("/logs", logs_page),
