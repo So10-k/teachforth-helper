@@ -1,0 +1,21 @@
+[Unit]
+Description=TeachForth Desk
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=tfdiscord
+Group=tfdiscord
+WorkingDirectory=/opt/teachforth-helper
+EnvironmentFile=/var/lib/teachforth-helper/bot.env
+Environment=TEACHFORTH_DATA=/var/lib/teachforth-helper
+Environment=TEACHFORTH_PORTAL_HOST=127.0.0.1
+Environment=TEACHFORTH_PORTAL_PORT=8795
+Environment=TEACHFORTH_PORTAL_URL=https://teachforthhelp.samsprojects.xyz
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/teachforth-helper-venv/bin/python /opt/teachforth-helper/bot.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
