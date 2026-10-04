@@ -140,10 +140,29 @@ def staff_member(bot, user_id):
     return guild.get_member(int(user_id))
 
 
+STAFF_WEBSITE = {"admin", "chapter_lead", "lead_teacher", "teacher"}
+STAFF_ROLE_NAMES = {"TeachForth Teacher", "TeachForth Chapter Lead", "TeachForth Admin", "TeachForth Session Lead"}
+
+
+def website_role(user_id):
+    try:
+        roles = json.loads(Path("/var/lib/teachforth-discord/roles.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str((roles or {}).get(str(user_id)) or "")
+
+
 def allowed(bot, user_id, permissions=""):
     if str(user_id) in {str(item) for item in bot.bot_owner_ids}:
         return True
+    website = website_role(user_id)
+    if website == "student":
+        return False
+    if website in STAFF_WEBSITE:
+        return True
     member = staff_member(bot, user_id)
+    if member is not None and any(role.name in STAFF_ROLE_NAMES for role in member.roles):
+        return True
     if member is not None:
         perms = member.guild_permissions
         if perms.administrator or perms.manage_guild or perms.manage_messages:
@@ -152,14 +171,7 @@ def allowed(bot, user_id, permissions=""):
         bits = int(permissions or "0")
     except ValueError:
         bits = 0
-    if bits & (0x8 | 0x20 | 0x2000):
-        return True
-    roles = {}
-    try:
-        roles = json.loads(Path("/var/lib/teachforth-discord/roles.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        roles = {}
-    return roles.get(str(user_id)) in {"admin", "chapter_lead", "lead_teacher", "teacher"}
+    return bool(bits & (0x8 | 0x20 | 0x2000))
 
 
 def issue_code(app, kind, discord_id=""):
@@ -449,11 +461,13 @@ async def thread_page(request):
     recipient = getattr(thread, "recipient", None)
     lookup = await dossier_html(await ide_lookup(user["id"], target=str(getattr(recipient, "id", "") or "")))
     case = teachforth_intake.card_html(getattr(recipient, "id", ""), e)
+    consent = support_line(channel_id)
     tools = ticket_tools(channel_id, csrf, getattr(recipient, "id", ""))
     body = f"""
     {nav()}
     <div class="card"><h1>{e(getattr(recipient, 'name', 'Student'))}</h1>{''.join(messages) or '<p>No messages yet.</p>'}</div>
     {case}
+    {consent}
     {tools}
     {lookup}
     <div class="card">
@@ -567,6 +581,21 @@ async def health(_request):
     return web.json_response({"ok": True})
 
 
+def support_line(channel_id):
+    try:
+        import teachforth_support
+        row = teachforth_support.consent(channel_id)
+    except Exception:
+        return ""
+    if not row:
+        return '<div class="card"><h2>Support consent</h2><p>None yet. In the Discord ticket, run <code>.diagnostic</code>.</p></div>'
+    return (
+        f'<div class="card"><h2>Support consent</h2><p>{e(row.get("name") or "Account")} · '
+        f'{e(row.get("role") or "")} · until {e(row.get("expires") or "")}. '
+        f'Commands stay in the Discord ticket.</p></div>'
+    )
+
+
 def ticket_tools(channel_id, csrf, user_id):
     state = teachforth_intake.get(user_id)
     fixes = teachforth_plugins.fixes_for(state)
@@ -637,6 +666,24 @@ def helpdesk_secret():
         return (DATA / "internal-secret").read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+async def class_call(method, path, body=None):
+    secret = class_secret()
+    if not secret:
+        return 0, {"error": "Class is off"}
+    base = os.environ.get("TEACHFORTH_CLASS_URL", "https://74-248-20-108.sslip.io").rstrip("/")
+    try:
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            kwargs = {"headers": {"x-teachforth-discord": secret}}
+            if body is not None:
+                kwargs["json"] = body
+            async with session.request(method, f"{base}{path}", **kwargs) as res:
+                data = await res.json(content_type=None)
+                return res.status, data if isinstance(data, dict) else {}
+    except (aiohttp.ClientError, TimeoutError):
+        return 0, {"error": "Class is off"}
 
 
 async def ide_lookup(actor_id, target="", query=""):

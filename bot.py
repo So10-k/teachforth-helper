@@ -91,6 +91,7 @@ class ModmailBot(commands.Bot):
             "cogs.teachforth",
             "cogs.deskflow",
             "cogs.intake",
+            "cogs.diagnostic",
         ]
         self._connected = None
         self.start_time = discord.utils.utcnow()

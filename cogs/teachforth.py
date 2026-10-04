@@ -4,10 +4,11 @@ import logging
 import re
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.http import Route
 
 import teachforth_portal
+import teachforth_roles
 from core import checks
 from core.models import PermissionLevel
 
@@ -85,6 +86,8 @@ class TeachForth(commands.Cog):
     async def on_ready(self):
         await teachforth_portal.start(self.bot)
         await self.ensure_desk()
+        if not self.role_sync.is_running():
+            self.role_sync.start()
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -216,7 +219,6 @@ class TeachForth(commands.Cog):
                 if guild is not None:
                     for role in self._staff_roles(guild):
                         await self.bot.update_perms(PermissionLevel.SUPPORTER, role.id)
-            await self.bot.update_perms("teachforthlookup", -1)
             if self.bot.config.get("thread_creation_menu_enabled"):
                 self.bot.config["thread_creation_menu_enabled"] = False
                 await self.bot.config.update()
@@ -259,6 +261,17 @@ class TeachForth(commands.Cog):
         self.bot.config["log_channel_id"] = log_channel.id
         await self.bot.config.update()
         await log_channel.send("Help logs land here. Tickets open under TeachForth Help.")
+
+    @tasks.loop(minutes=2)
+    async def role_sync(self):
+        try:
+            await teachforth_roles.sync(self.bot)
+        except Exception:
+            logger.exception("Website role sync failed")
+
+    @role_sync.before_loop
+    async def role_sync_ready(self):
+        await self.bot.wait_until_ready()
 
     def _staff_roles(self, guild):
         words = ("teacher", "staff", "mod", "helper", "lead", "admin")
