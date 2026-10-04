@@ -19,6 +19,13 @@ TEMPLATES = {"web", "python", "javascript", "java", "c", "cpp", "markdown", "emp
 FENCE = {"py": "python", "js": "javascript", "html": "html", "css": "css", "java": "java", "c": "c", "cpp": "cpp", "md": "markdown"}
 
 
+def code_error(data):
+    message = str((data or {}).get("error") or "")
+    if not message or message == "Sign in first":
+        return "I could not check that code. Press Support code and paste the one from your profile."
+    return message
+
+
 def _claim(interaction):
     cog = interaction.client.get_cog("Diagnostic")
     if cog is None or interaction.response.is_done() or interaction.id in cog._seen:
@@ -119,7 +126,7 @@ class Diagnostic(commands.Cog):
             "teacherDiscordId": teachforth_support.teacher_for(channel.id),
         })
         if status != 200 or not data.get("grant"):
-            await interaction.followup.send(data.get("error") or "That code did not work. Use Support code in the profile, not Link Discord.", ephemeral=True)
+            await interaction.followup.send(code_error(data), ephemeral=True)
             return
         person = data.get("person") or {}
         teachforth_support.remember(channel.id, {
@@ -142,7 +149,7 @@ class Diagnostic(commands.Cog):
         })
         if status != 200 or not data.get("grant"):
             try:
-                await author.send("That did not look like a support code. Press Support code, or copy the one from your profile.")
+                await author.send(code_error(data))
             except discord.HTTPException:
                 pass
             return

@@ -33,6 +33,36 @@ SPECS = {
     "TeachForth Session Lead": 0xE0AAFF,
 }
 STAFF_COMMANDS = ("teachforthlookup", "diagnostic", "projects", "project", "reports", "chapters", "helpmenusend")
+COMMAND_LEVELS = {
+    "help": "REGULAR",
+    "about": "REGULAR",
+    "reply": "SUPPORTER",
+    "close": "SUPPORTER",
+    "note": "SUPPORTER",
+    "snippet": "SUPPORTER",
+    "logs": "SUPPORTER",
+    "contact": "SUPPORTER",
+    "claim": "SUPPORTER",
+    "diagnostic": "SUPPORTER",
+    "projects": "SUPPORTER",
+    "project": "SUPPORTER",
+    "project view": "SUPPORTER",
+    "project create": "SUPPORTER",
+    "reports": "SUPPORTER",
+    "chapters": "SUPPORTER",
+    "helpmenusend": "SUPPORTER",
+    "teachforthlookup": "SUPPORTER",
+    "block": "MODERATOR",
+    "move": "MODERATOR",
+    "activity": "ADMINISTRATOR",
+    "permissions": "OWNER",
+}
+STAFF_CATEGORY_ROLES = (
+    "TeachForth Teacher",
+    "TeachForth Chapter Lead",
+    "TeachForth Admin",
+    "TeachForth Session Lead",
+)
 
 
 def wanted_names(row):
@@ -148,13 +178,22 @@ async def clear_session(role):
 
 async def apply_levels(bot, roles):
     levels = dict(bot.config.get("level_permissions") or {})
-    desired = {
-        "ADMINISTRATOR": ids(roles, ["TeachForth Admin"]),
-        "MODERATOR": ids(roles, ["TeachForth Chapter Lead"]),
-        "SUPPORTER": ids(roles, ["TeachForth Teacher", "TeachForth Session Lead"]),
-    }
-    if any(not row for row in desired.values()):
-        return
+    desired = {"REGULAR": ["-1"]}
+    admin = ids(roles, ["TeachForth Admin"])
+    chapter = ids(roles, ["TeachForth Chapter Lead"])
+    teachers = ids(roles, ["TeachForth Teacher", "TeachForth Session Lead"])
+    if admin:
+        desired["ADMINISTRATOR"] = admin
+    if chapter:
+        desired["MODERATOR"] = chapter
+    if teachers:
+        desired["SUPPORTER"] = teachers
+    owners = [str(item) for item in (levels.get("OWNER") or [])]
+    for owner_id in getattr(bot, "bot_owner_ids", []) or []:
+        if str(owner_id) not in owners:
+            owners.append(str(owner_id))
+    if owners:
+        desired["OWNER"] = owners
     changed = False
     for level, wanted in desired.items():
         current = [str(item) for item in levels.get(level) or []]
@@ -163,6 +202,16 @@ async def apply_levels(bot, roles):
             changed = True
     if changed:
         bot.config["level_permissions"] = levels
+        await bot.config.update()
+        logger.info("Set Modmail permission levels from TeachForth roles.")
+    overrides = dict(bot.config.get("override_command_level") or {})
+    override_changed = False
+    for name, level in COMMAND_LEVELS.items():
+        if overrides.get(name) != level:
+            overrides[name] = level
+            override_changed = True
+    if override_changed:
+        bot.config["override_command_level"] = overrides
         await bot.config.update()
     perms = dict(bot.config.get("command_permissions") or {})
     stripped = False
@@ -178,6 +227,39 @@ async def apply_levels(bot, roles):
     if stripped:
         bot.config["command_permissions"] = perms
         await bot.config.update()
+    await apply_category(bot, roles)
+
+
+async def apply_category(bot, roles):
+    category = bot.main_category
+    if category is None:
+        return
+    overwrites = dict(category.overwrites)
+    changed = False
+    for name in STAFF_CATEGORY_ROLES:
+        role = roles.get(name)
+        if role is None:
+            continue
+        current = overwrites.get(role)
+        if current is not None and current.read_messages and current.send_messages:
+            continue
+        overwrites[role] = discord.PermissionOverwrite(
+            read_messages=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+        )
+        changed = True
+    student = roles.get("TeachForth Student")
+    if student is not None and student in overwrites:
+        overwrites.pop(student)
+        changed = True
+    if not changed:
+        return
+    try:
+        await category.edit(overwrites=overwrites, reason="TeachForth website roles")
+    except discord.HTTPException:
+        logger.warning("Could not open the help category to TeachForth staff roles.")
 
 
 def cached_people():
