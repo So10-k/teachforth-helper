@@ -87,8 +87,11 @@ async def sync(bot):
     managed = {role.id for role in roles.values()}
     seen = set()
     changed = 0
+    paused = _training_ids()
     for discord_id, row in people.items():
         seen.add(int(discord_id))
+        if int(discord_id) in paused:
+            continue
         changed += await apply_account(bot, guild.id, discord_id, wanted_names(row), roles, managed)
     for member in list(guild.members):
         if member.bot or member.id in seen:
@@ -161,6 +164,10 @@ async def apply_levels(bot, roles):
     admin = ids(roles, ["TeachForth Admin"])
     chapter = ids(roles, ["TeachForth Chapter Lead"])
     teachers = ids(roles, ["TeachForth Teacher", "TeachForth Session Lead"])
+    guild = bot.modmail_guild
+    training = discord.utils.get(guild.roles, name="TeachForth Training") if guild is not None else None
+    if training is not None and str(training.id) not in teachers:
+        teachers.append(str(training.id))
     if admin:
         desired["ADMINISTRATOR"] = admin
     if chapter:
@@ -261,6 +268,8 @@ async def refresh_one(bot, discord_id):
     guild = bot.modmail_guild
     if guild is None:
         return {"ok": False, "error": "The server is not ready."}
+    if int(discord_id) in _training_ids():
+        return {"ok": True, "text": "Desk training has this person's roles saved. `.train end` restores them.", "changed": 0}
     status, data = await teachforth_portal.class_call("GET", f"/api/discord/profile?discordId={discord_id}")
     source = "website"
     if status == 404:
@@ -318,6 +327,8 @@ async def apply_people(bot, people, source):
         if not discord_id.isdigit():
             continue
         seen.add(int(discord_id))
+        if int(discord_id) in _training_ids():
+            continue
         changed += await apply_account(bot, guild.id, discord_id, wanted_names(row), roles, managed)
         if row.get("role") in ROLE_FOR:
             saved[discord_id] = row.get("role")
@@ -352,6 +363,14 @@ def cached_people():
 
 def ids(roles, names):
     return [str(roles[name].id) for name in names if name in roles]
+
+
+def _training_ids():
+    try:
+        import teachforth_training
+        return teachforth_training.active_ids()
+    except Exception:
+        return set()
 
 
 async def class_phase():

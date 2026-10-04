@@ -481,6 +481,8 @@ class Diagnostic(commands.Cog):
         if thread is None or getattr(thread, "recipient", None) is None:
             await ctx.send("Run that in an open ticket.")
             return None
+        if self._practice(ctx):
+            return thread
         if not await self._website_staff(ctx):
             return None
         return thread
@@ -494,6 +496,13 @@ class Diagnostic(commands.Cog):
             await ctx.send("No support consent on this ticket. Run `.diagnostic` and have them paste the code from their profile.")
             return None, None
         return row, thread.channel
+
+    def _practice(self, ctx):
+        try:
+            import teachforth_training
+            return teachforth_training.is_ticket(getattr(ctx.channel, "id", 0))
+        except Exception:
+            return False
 
     async def _website_staff(self, ctx):
         status, data = await teachforth_portal.class_call("GET", f"/api/discord/profile?discordId={ctx.author.id}")

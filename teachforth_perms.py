@@ -75,6 +75,9 @@ COMMANDS = {
     "activity": ("ADMINISTRATOR", "Set the bot status.", "<text>"),
     "enable": ("ADMINISTRATOR", "Open the desk to new tickets.", ""),
     "disable": ("ADMINISTRATOR", "Pause the desk.", ""),
+    "train": ("MODERATOR", "Start a private desk training for a staff member.", "<user>"),
+    "train end": ("MODERATOR", "Restore the roles and channels saved at the start of training.", "<user>"),
+    "train status": ("MODERATOR", "Show who is in desk training.", ""),
     "permissions": ("OWNER", "See and edit who can run each command.", ""),
     "permissions override": ("OWNER", "Change the level one command requires.", "<command> <student|teacher|chapter lead|admin|owner>"),
     "permissions add": ("OWNER", "Give a role a level. Quote a two-word level.", "level <level> <role>"),
@@ -89,6 +92,7 @@ DENIAL = {
     "block": "Blocking is for a chapter lead or an admin.",
     "unblock": "Unblocking is for a chapter lead or an admin.",
     "move": "Moving a ticket is for a chapter lead or an admin.",
+    "train": "Desk training is for a chapter lead or an admin.",
     "diagnostic": "Diagnostics are for a teacher, the session lead, a chapter lead, or an admin.",
     "permissions": "Changing permissions is owner only.",
 }
@@ -98,6 +102,7 @@ COGS = {
     "Diagnostic": "Support-code lookup after the student consents.",
     "TeachForth": "Helpdesk registration and account lookup.",
     "DeskFlow": "Sorting, claiming, and the queue.",
+    "Training": "Private desk training for new staff.",
 }
 
 
