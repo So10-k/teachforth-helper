@@ -40,6 +40,7 @@ COMMANDS = {
     "help": ("REGULAR", "Show the commands your role can run.", "[command]"),
     "about": ("REGULAR", "About this TeachForth bot.", ""),
     "login": ("SUPPORTER", "Register a teacher for the helpdesk. A student cannot register.", "[code]"),
+    "roles": ("REGULAR", "Refresh your website role on Discord. Admins can refresh everyone.", "[all]"),
     "reply": ("SUPPORTER", "Send this to the student. They see your name.", "<message>"),
     "areply": ("SUPPORTER", "Send this to the student without your name.", "<message>"),
     "preply": ("SUPPORTER", "Send this to the student with no embed.", "<message>"),
@@ -84,6 +85,7 @@ COMMANDS = {
 }
 DENIAL = {
     "login": "Helpdesk registration is for a teacher, chapter lead, or admin.",
+    "roles": "Refreshing everyone is for an admin. `.roles` refreshes only you.",
     "block": "Blocking is for a chapter lead or an admin.",
     "unblock": "Unblocking is for a chapter lead or an admin.",
     "move": "Moving a ticket is for a chapter lead or an admin.",

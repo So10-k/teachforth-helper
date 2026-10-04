@@ -413,13 +413,19 @@ async def staff_rank(bot, discord_id):
     return ""
 
 
+def topic_covered(topic):
+    return any(topic in topics for topics in list_all().values())
+
+
 async def can_see(bot, discord_id, topic):
     if topic not in TOPIC_IDS:
         return True
     rank = await staff_rank(bot, discord_id)
     if rank == "admin":
         return True
-    return topic in qualifications_for(discord_id)
+    if topic in qualifications_for(discord_id):
+        return True
+    return rank == "chapter" and not topic_covered(topic)
 
 
 def allow_overwrite():
@@ -447,15 +453,7 @@ async def topic_category(guild, topic):
     me = guild.me
     if me is None or not me.guild_permissions.manage_channels:
         return None
-    overwrites = {
-        guild.default_role: deny_overwrite(),
-        me: allow_overwrite(),
-    }
-    for role in guild.roles:
-        if role.name == "TeachForth Admin":
-            overwrites[role] = allow_overwrite()
-        elif role.name in HIDE_ROLES:
-            overwrites[role] = deny_overwrite()
+    overwrites = category_overwrites(guild, me, topic)
     try:
         return await guild.create_category(name, overwrites=overwrites, reason="TeachForth qualification")
     except discord.HTTPException:
@@ -463,16 +461,33 @@ async def topic_category(guild, topic):
         return None
 
 
-def qualified_members(guild, topic):
+def access_targets(guild, topic):
+    """Member overwrites win over a role deny. Use an Object if the member is not cached."""
     if guild is None:
         return []
-    wanted = {discord_id for discord_id, topics in list_all().items() if topic in topics}
-    found = []
-    for discord_id in wanted:
+    targets = []
+    for discord_id, topics in list_all().items():
+        if topic not in topics or not str(discord_id).isdigit():
+            continue
         member = guild.get_member(int(discord_id))
-        if member is not None:
-            found.append(member)
-    return found
+        targets.append(member or discord.Object(id=int(discord_id)))
+    return targets
+
+
+def category_overwrites(guild, me, topic):
+    overwrites = {
+        guild.default_role: deny_overwrite(),
+        me: allow_overwrite(),
+    }
+    covered = topic_covered(topic)
+    for role in guild.roles:
+        if role.name == "TeachForth Admin" or (role.name == "TeachForth Chapter Lead" and not covered):
+            overwrites[role] = allow_overwrite()
+        elif role.name in HIDE_ROLES:
+            overwrites[role] = deny_overwrite()
+    for target in access_targets(guild, topic):
+        overwrites[target] = allow_overwrite()
+    return overwrites
 
 
 async def route_channel(bot, channel, topic, recipient):
@@ -482,17 +497,7 @@ async def route_channel(bot, channel, topic, recipient):
     me = guild.me if guild else None
     if me is None or not me.guild_permissions.manage_channels:
         return False
-    overwrites = {
-        guild.default_role: deny_overwrite(),
-        me: allow_overwrite(),
-    }
-    for role in guild.roles:
-        if role.name == "TeachForth Admin":
-            overwrites[role] = allow_overwrite()
-        elif role.name in HIDE_ROLES:
-            overwrites[role] = deny_overwrite()
-    for member in qualified_members(guild, topic):
-        overwrites[member] = allow_overwrite()
+    overwrites = category_overwrites(guild, me, topic)
     for owner_id in set(getattr(bot, "bot_owner_ids", []) or []):
         member = guild.get_member(int(owner_id))
         if member is not None:
@@ -545,11 +550,35 @@ async def find_thread(bot, user=None, channel_id=""):
 
 async def open_thread(bot, user):
     existing = await find_thread(bot, user=user)
-    if existing is not None:
-        return existing, False
-    thread = await bot.threads.find_or_create(user)
-    await thread.wait_until_ready()
+    if existing is not None and getattr(existing, "channel", None) is not None:
+        live = bot.get_channel(existing.channel.id)
+        closing = getattr(bot.threads, "closing", set())
+        if live is not None and existing.channel.id not in closing:
+            return existing, False
+    cache = getattr(bot.threads, "cache", None)
+    if cache is not None:
+        cache.pop(getattr(user, "id", None), None)
+    # find_or_create can return a closed thread and never create the next one.
+    thread = await bot.threads.create(user, creator=bot.user, manual_trigger=False)
+    try:
+        await thread.wait_until_ready()
+    except Exception:
+        logger.info("New thread for %s was not ready", getattr(user, "id", ""))
+    if getattr(thread, "cancelled", False) or getattr(thread, "channel", None) is None:
+        return None, False
     return thread, True
+
+
+async def reroute_open(bot):
+    for thread in list(getattr(bot, "threads", [])):
+        channel = getattr(thread, "channel", None)
+        recipient = getattr(thread, "recipient", None)
+        if channel is None or recipient is None:
+            continue
+        topic = topic_for(channel.id)
+        if topic not in TOPIC_IDS:
+            topic = "general"
+        await route_channel(bot, channel, topic, recipient)
 
 
 def footer(kind):
@@ -1273,6 +1302,53 @@ async def widget_thread(request):
     })
 
 
+async def widget_close(request):
+    body, error = await accept_json(request)
+    if error:
+        return error
+    bot = request.app["bot"]
+    user, error = await actor_user(bot, body)
+    if error:
+        return error
+    rank = await staff_rank(bot, user.id)
+    channel_id = snowflake(body.get("channelId"))
+    thread = await find_thread(bot, user=user, channel_id=channel_id or "")
+    if thread is None or thread.channel is None:
+        return web.json_response({"ok": True, "closed": True})
+    if str(getattr(thread.recipient, "id", "")) != str(user.id):
+        if await visible(bot, user.id, thread.channel.id, rank) is None:
+            return web.json_response({"error": "You cannot close that ticket."}, status=403)
+    try:
+        await thread.close(closer=user, message="Closed from the website.")
+    except Exception:
+        logger.info("Could not close ticket %s from the website", thread.channel.id)
+        return web.json_response({"error": "That ticket did not close."}, status=502)
+    return web.json_response({"ok": True, "closed": True})
+
+
+async def widget_roles(request):
+    body, error = await accept_json(request)
+    if error:
+        return error
+    bot = request.app["bot"]
+    user, error = await actor_user(bot, body)
+    if error:
+        return error
+    import teachforth_roles
+
+    everyone = bool(body.get("everyone"))
+    rank = await staff_rank(bot, user.id)
+    if everyone and rank != "admin" and not await bot.is_owner(user):
+        return web.json_response({"error": "Refreshing everyone is for an admin."}, status=403)
+    if everyone:
+        result = await teachforth_roles.refresh_all(bot)
+    else:
+        result = await teachforth_roles.refresh_one(bot, user.id)
+    if not result.get("ok"):
+        return web.json_response({"error": result.get("error") or "Roles were not refreshed."}, status=502)
+    return web.json_response({"ok": True, "cards": [card("Roles", result.get("text") or "Roles refreshed.", tone="good")]})
+
+
 def add_routes(app):
     app.router.add_post("/widget/session", widget_session)
     app.router.add_post("/widget/open", widget_open)
@@ -1281,6 +1357,8 @@ def add_routes(app):
     app.router.add_post("/widget/diagnostics", widget_diagnostics)
     app.router.add_post("/widget/walk", widget_walk)
     app.router.add_post("/widget/qualify", widget_qualify)
+    app.router.add_post("/widget/close", widget_close)
+    app.router.add_post("/widget/roles", widget_roles)
 
 
 def attach(bot):

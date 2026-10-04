@@ -1,5 +1,7 @@
 """Qualification routing for TeachForth tickets."""
 
+import logging
+
 import discord
 from discord.ext import commands
 
@@ -7,15 +9,28 @@ import teachforth_chat
 from core import checks
 from core.models import PermissionLevel
 
+logger = logging.getLogger("teachforth.qualify")
+
 COLOR = 0x3B6EF6
 
 
 class Qualify(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._routed = False
 
     async def cog_load(self):
         teachforth_chat.attach(self.bot)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self._routed:
+            return
+        self._routed = True
+        try:
+            await teachforth_chat.reroute_open(self.bot)
+        except Exception:
+            logger.exception("Could not reopen qualification access")
 
     @commands.group(name="qualification", aliases=["qualifications", "qualify"], invoke_without_command=True)
     @checks.has_permissions(PermissionLevel.SUPPORTER)

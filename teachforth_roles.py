@@ -241,6 +241,104 @@ async def apply_category(bot, roles):
         logger.warning("Could not open the help category to TeachForth staff roles.")
 
 
+def remember_roles(rows):
+    path = Path("/var/lib/teachforth-discord/roles.json")
+    clean = {}
+    for key, value in (rows or {}).items():
+        if str(key).isdigit() and value in ROLE_FOR:
+            clean[str(key)] = value
+    path.write_text(json.dumps(clean) + "\n", encoding="utf-8")
+
+
+def role_line(names, source, changed):
+    shown = ", ".join(names) if names else "No TeachForth role"
+    where = "the website" if source == "website" else "the last saved role"
+    state = "Updated." if changed else "Already matched."
+    return f"{shown}. Pulled from {where} {state}"
+
+
+async def refresh_one(bot, discord_id):
+    guild = bot.modmail_guild
+    if guild is None:
+        return {"ok": False, "error": "The server is not ready."}
+    status, data = await teachforth_portal.class_call("GET", f"/api/discord/profile?discordId={discord_id}")
+    source = "website"
+    if status == 404:
+        return {"ok": False, "error": "Link Discord from your profile first."}
+    if status != 200:
+        cached = next((row for row in (cached_people() or []) if str(row.get("discordId")) == str(discord_id)), None)
+        if not cached:
+            return {"ok": False, "error": "The website did not answer, and this account has no saved role."}
+        data = cached
+        source = "saved"
+    if await class_phase() == "off":
+        data = dict(data)
+        data["sessionLead"] = False
+    roles = await ensure_roles(guild)
+    names = wanted_names(data)
+    changed = await apply_account(bot, guild.id, discord_id, names, roles, {role.id for role in roles.values()})
+    if source == "website" and data.get("role"):
+        try:
+            current = {row["discordId"]: row["role"] for row in (cached_people() or [])}
+            current[str(discord_id)] = data.get("role")
+            remember_roles(current)
+        except OSError:
+            logger.info("Could not save the refreshed role")
+    await apply_levels(bot, roles)
+    return {"ok": True, "text": role_line(names, source, changed), "changed": changed}
+
+
+async def refresh_all(bot):
+    status, data = await teachforth_portal.class_call("GET", "/api/discord/roster")
+    source = "website"
+    people = data.get("people") if status == 200 and isinstance(data.get("people"), list) else None
+    if people is None:
+        people = cached_people()
+        source = "saved"
+    if not people:
+        return {"ok": False, "error": "The website did not answer, and there is no saved roster."}
+    if source == "saved" or await class_phase() == "off":
+        for row in people:
+            row["sessionLead"] = False
+        source = "saved" if source == "saved" else source
+    return await apply_people(bot, people, source)
+
+
+async def apply_people(bot, people, source):
+    guild = bot.modmail_guild
+    if guild is None:
+        return {"ok": False, "error": "The server is not ready."}
+    roles = await ensure_roles(guild)
+    managed = {role.id for role in roles.values()}
+    seen = set()
+    changed = 0
+    saved = {}
+    for row in people:
+        discord_id = str(row.get("discordId") or "")
+        if not discord_id.isdigit():
+            continue
+        seen.add(int(discord_id))
+        changed += await apply_account(bot, guild.id, discord_id, wanted_names(row), roles, managed)
+        if row.get("role") in ROLE_FOR:
+            saved[discord_id] = row.get("role")
+    for member in list(guild.members):
+        if member.bot or member.id in seen:
+            continue
+        if not any(role.id in managed for role in member.roles):
+            continue
+        changed += await apply_account(bot, guild.id, member.id, [], roles, managed)
+    if source == "website" and saved:
+        try:
+            remember_roles(saved)
+        except OSError:
+            logger.info("Could not save the refreshed roster")
+    teachforth_perms.apply_text(bot)
+    await apply_levels(bot, roles)
+    noun = "change" if changed == 1 else "changes"
+    where = "the website" if source == "website" else "the last saved roster"
+    return {"ok": True, "text": f"Refreshed {len(seen)} accounts from {where}. {changed} role {noun}.", "changed": changed}
+
+
 def cached_people():
     path = Path("/var/lib/teachforth-discord/roles.json")
     try:

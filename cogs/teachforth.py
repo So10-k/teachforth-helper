@@ -102,6 +102,26 @@ class TeachForth(commands.Cog):
             await interaction.response.defer(ephemeral=True)
         except discord.HTTPException:
             return
+        if name == "roles":
+            everyone = any(
+                option.get("name") == "everyone" and option.get("value") is True
+                for option in (interaction.data or {}).get("options") or []
+            )
+            text = await self._roles_text(interaction.user, everyone)
+            body = {"content": text[:1800], "flags": 64}
+            try:
+                await self.bot.http.request(
+                    Route(
+                        "PATCH",
+                        "/webhooks/{application_id}/{interaction_token}/messages/@original",
+                        application_id=interaction.application_id,
+                        interaction_token=interaction.token,
+                    ),
+                    json=body,
+                )
+            except discord.HTTPException:
+                logger.warning("Role refresh reply failed")
+            return
         status, payload = await teachforth_portal.slash_answer(self._slash_body(interaction))
         body = payload if status == 200 and isinstance(payload, dict) else {
             "embeds": [{"title": "That got stuck", "description": "Try again in a minute.", "color": 0x7A1FA3}],
@@ -119,6 +139,27 @@ class TeachForth(commands.Cog):
             )
         except discord.HTTPException:
             logger.warning("Slash followup failed for %s", name)
+
+    @commands.command(name="roles", aliases=["refetch", "refetchroles"], usage="[all]")
+    @checks.has_permissions(PermissionLevel.REGULAR)
+    async def roles(self, ctx, scope: str = ""):
+        """Refresh your website role. Admins can refresh everyone with `.roles all`."""
+        if ctx.guild is None:
+            return await ctx.send("Run that in the TeachForth server.")
+        everyone = scope.strip().lower() in {"all", "everyone"}
+        await ctx.send(await self._roles_text(ctx.author, everyone))
+
+    async def _roles_text(self, member, everyone):
+        if everyone:
+            names = {role.name for role in getattr(member, "roles", [])}
+            website = teachforth_portal.website_role(member.id)
+            owner = await self.bot.is_owner(member)
+            if not owner and "TeachForth Admin" not in names and website != "admin":
+                return "Refreshing everyone is for an admin. `.roles` refreshes only you."
+            result = await teachforth_roles.refresh_all(self.bot)
+        else:
+            result = await teachforth_roles.refresh_one(self.bot, member.id)
+        return result.get("text") or result.get("error") or "Roles were not refreshed."
 
     @commands.command(name="login", usage="[code]")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
