@@ -16,6 +16,7 @@ import aiohttp
 from aiohttp import web
 
 import teachforth_intake
+import teachforth_plugins
 
 DATA = Path(os.environ.get("TEACHFORTH_DATA", "/var/lib/teachforth-helper"))
 HOST = os.environ.get("TEACHFORTH_PORTAL_HOST", "127.0.0.1")
@@ -120,6 +121,7 @@ button, .button {{ display:inline-block; border:0; border-radius:999px; backgrou
 .msg {{ padding:12px 0; border-top:1px solid var(--line); }}
 .msg b {{ display:block; }}
 .err {{ color:#8d1d3b; }}
+.tag {{ display:inline-block; border-radius:999px; padding:2px 8px; background:#f3e6ff; color:var(--purple); font-size:13px; }}
 footer {{ color:var(--muted); font-size:13px; padding:0 28px 28px; }}
 </style>
 </head>
@@ -385,22 +387,31 @@ async def desk(request):
     user = require_staff(request)
     bot = request.app["bot"]
     groups = {}
+    urgent = []
     for thread in list(bot.threads):
         if not getattr(thread, "ready", False) or thread.channel is None:
             continue
         recipient = getattr(thread, "recipient", None)
         name = getattr(recipient, "name", None) or str(getattr(thread, "id", "Student"))
-        topic = (teachforth_intake.get(getattr(recipient, "id", "")).get("topic") or str(thread.channel.name).split("-", 1)[0])
-        if topic not in {"ide", "login", "github", "work", "lesson", "other"}:
+        meta = teachforth_intake.get(getattr(recipient, "id", ""))
+        topic = meta.get("plugin") or str(thread.channel.name).split("-", 1)[0]
+        if topic not in teachforth_plugins.BY_ID:
             topic = "open"
-        groups.setdefault(topic, []).append(
-            f'<p><a href="/thread/{int(thread.channel.id)}"><strong>{e(name)}</strong></a> · {e(topic)}</p>'
-        )
+        label = teachforth_plugins.label(topic)
+        status = meta.get("status") or "open"
+        line = f'<p><a href="/thread/{int(thread.channel.id)}"><strong>{e(name)}</strong></a> · {e(label)} · <span class="tag">{e(status)}</span></p>'
+        if meta.get("priority") == "high":
+            urgent.append(line)
+        groups.setdefault(topic, []).append(line)
     listing = ""
-    for topic in ("ide", "login", "github", "work", "lesson", "other", "open"):
+    if urgent:
+        listing += f"<h2>Blocked while class is on</h2>{''.join(urgent)}"
+    for topic in list(teachforth_plugins.BY_ID) + ["open"]:
         rows = groups.get(topic) or []
-        if rows:
-            listing += f"<h2>{e(topic.title())}</h2>{''.join(rows)}"
+        if rows and topic != "open":
+            listing += f"<h2>{e(teachforth_plugins.label(topic))}</h2>{''.join(rows)}"
+    if groups.get("open"):
+        listing += f"<h2>Open</h2>{''.join(groups['open'])}"
     listing = listing or "<p>No open conversations. A student message in Discord will show up here.</p>"
     guild = bot.modmail_guild
     me = guild.me if guild else None
@@ -438,10 +449,12 @@ async def thread_page(request):
     recipient = getattr(thread, "recipient", None)
     lookup = await dossier_html(await ide_lookup(user["id"], target=str(getattr(recipient, "id", "") or "")))
     case = teachforth_intake.card_html(getattr(recipient, "id", ""), e)
+    tools = ticket_tools(channel_id, csrf, getattr(recipient, "id", ""))
     body = f"""
     {nav()}
     <div class="card"><h1>{e(getattr(recipient, 'name', 'Student'))}</h1>{''.join(messages) or '<p>No messages yet.</p>'}</div>
     {case}
+    {tools}
     {lookup}
     <div class="card">
       <form method="post" action="/thread/{channel_id}/reply">
@@ -487,6 +500,20 @@ async def thread_action(request):
             await thread.note(fake_message(member, thread.channel, text), persistent=True)
         elif action == "close":
             await thread.close(closer=member, message=text or None, silent=not text)
+        elif action == "status":
+            kind = str(form.get("status") or "")
+            note = teachforth_plugins.STATUS.get(kind)
+            if not note:
+                return web.Response(status=400, text="Missing")
+            if text:
+                note = f"{note}\n\n{text}"
+            await thread.reply(fake_message(member, thread.channel, note), content=note)
+            teachforth_intake.set_status(getattr(thread.recipient, "id", ""), kind)
+        elif action == "macro":
+            sent = macro_text(thread, str(form.get("macro") or ""))
+            if not sent:
+                return web.Response(status=400, text="Missing")
+            await thread.reply(fake_message(member, thread.channel, sent), content=sent)
         else:
             return web.Response(status=404, text="Missing")
     except Exception:
@@ -540,8 +567,55 @@ async def health(_request):
     return web.json_response({"ok": True})
 
 
+def ticket_tools(channel_id, csrf, user_id):
+    state = teachforth_intake.get(user_id)
+    fixes = teachforth_plugins.fixes_for(state)
+    options = "".join(
+        f'<option value="{e(key)}">{e(label)}</option>' for key, label, _text in fixes
+    ) or '<option value="">No saved step</option>'
+    return f"""
+    <div class="card"><h2>Update the student</h2>
+      <form method="post" action="/thread/{channel_id}/status">
+        <input type="hidden" name="csrf" value="{csrf}">
+        <label for="extra">Optional note</label>
+        <input id="extra" name="message" maxlength="500" placeholder="One sentence they will see">
+        <p class="row">
+          <button type="submit" name="status" value="need">Need a detail</button>
+          <button type="submit" name="status" value="onit">I'm on it</button>
+          <button class="ghost" type="submit" name="status" value="solved">Solved</button>
+        </p>
+      </form>
+      <form method="post" action="/thread/{channel_id}/macro">
+        <input type="hidden" name="csrf" value="{csrf}">
+        <label for="macro">Send a step again</label>
+        <select id="macro" name="macro">{options}</select>
+        <p><button class="ghost" type="submit">Send step</button></p>
+      </form>
+    </div>"""
+
+
+def macro_text(thread, key):
+    recipient = getattr(thread, "recipient", None)
+    state = teachforth_intake.get(getattr(recipient, "id", ""))
+    for item_id, _label, text in teachforth_plugins.fixes_for(state):
+        if item_id == key and text:
+            return scrub(text)[:1800]
+    return ""
+
+
+async def plugins_page(request):
+    user = require_staff(request)
+    body = f"""
+    {nav("plugins")}
+    <div class="card"><h1>Helpers</h1>
+      <p>A student gets one of these when they message the bot. Solved means they did not need a ticket.</p>
+    </div>
+    {teachforth_plugins.library_html(teachforth_intake.stats(), e)}"""
+    return web.Response(text=page("Helpers", body, user.get("name")), content_type="text/html")
+
+
 def nav(active=""):
-    items = [("desk", "Open"), ("lookup", "Lookup"), ("snippets", "Snippets"), ("blocked", "Blocked"), ("logs", "Logs")]
+    items = [("desk", "Open"), ("plugins", "Helpers"), ("lookup", "Lookup"), ("snippets", "Snippets"), ("blocked", "Blocked"), ("logs", "Logs")]
     links = []
     for path, label in items:
         kind = "button" if path == active else "button ghost"
@@ -826,6 +900,7 @@ def build_app(bot):
         web.get("/oauth/callback", oauth_callback),
         web.post("/internal/register", register),
         web.get("/desk", desk),
+        web.get("/plugins", plugins_page),
         web.get("/lookup", lookup_page),
         web.get("/snippets", snippets_page),
         web.post("/snippets", snippets_save),

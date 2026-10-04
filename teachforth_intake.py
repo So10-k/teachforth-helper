@@ -64,18 +64,61 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def load():
+def load_all():
     try:
         data = json.loads(FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         data = {}
+    if not isinstance(data, dict):
+        data = {}
     users = data.get("users")
-    return users if isinstance(users, dict) else {}
+    stats = data.get("stats")
+    data["users"] = users if isinstance(users, dict) else {}
+    data["stats"] = stats if isinstance(stats, dict) else {}
+    return data
+
+
+def save_all(data):
+    FILE.parent.mkdir(parents=True, exist_ok=True)
+    FILE.write_text(json.dumps({"users": data.get("users") or {}, "stats": data.get("stats") or {}}, indent=2), encoding="utf-8")
+
+
+def load():
+    return load_all()["users"]
 
 
 def save(users):
-    FILE.parent.mkdir(parents=True, exist_ok=True)
-    FILE.write_text(json.dumps({"users": users}, indent=2), encoding="utf-8")
+    data = load_all()
+    data["users"] = users
+    save_all(data)
+
+
+def stats():
+    return load_all()["stats"]
+
+
+def bump(kind, plugin_id):
+    if kind not in {"fixed", "opened"}:
+        return
+    data = load_all()
+    row = data["stats"]
+    row[kind] = int(row.get(kind) or 0) + 1
+    by = row.get("by") if isinstance(row.get("by"), dict) else {}
+    item = by.get(plugin_id or "other") if isinstance(by.get(plugin_id or "other"), dict) else {}
+    item[kind] = int(item.get(kind) or 0) + 1
+    by[plugin_id or "other"] = item
+    row["by"] = by
+    data["stats"] = row
+    save_all(data)
+
+
+def set_status(user_id, status):
+    state = get(user_id)
+    if not state:
+        return
+    state["status"] = status
+    state["updated"] = now()
+    put(user_id, state)
 
 
 def get(user_id):
@@ -141,7 +184,12 @@ def brief_lines(state):
 
 def card_html(user_id, escape):
     state = get(user_id)
-    if not state or not state.get("topic"):
+    if not state:
+        return ""
+    if state.get("plugin") or state.get("trail"):
+        import teachforth_plugins
+        return teachforth_plugins.card_html(state, escape)
+    if not state.get("topic"):
         return ""
     rows = "".join(
         f"<p><b>{escape(name)}</b><br>{escape(text)}</p>" for name, text in brief_lines(state)

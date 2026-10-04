@@ -1,4 +1,4 @@
-TeachForth Desk is a modified copy of Modmail. Staff use Discord and https://teachforthhelp.samsprojects.xyz. Register with `/login` or `.login CODE`. This program is AGPL-3.0; the source of this running copy is this repository.
+TeachForth Desk is a modified copy of Modmail. Students message the bot and walk through a helper before a ticket opens. Staff use Discord and https://teachforthhelp.samsprojects.xyz. Register with `/login` or `.login CODE`. This program is AGPL-3.0; the source of this running copy is this repository.
 
 <div align="center">
   <img src="https://i.imgur.com/o558Qnq.png" align="center">
