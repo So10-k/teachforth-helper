@@ -1984,6 +1984,21 @@ class ModmailBot(commands.Bot):
                             context.command.qualified_name,
                             corrected_permission_level.name,
                         )
+                        try:
+                            import teachforth_perms
+
+                            await context.send(
+                                embed=discord.Embed(
+                                    color=self.error_color,
+                                    description=teachforth_perms.denial(
+                                        context.command.qualified_name,
+                                        corrected_permission_level,
+                                    ),
+                                )
+                            )
+                        except Exception:
+                            logger.debug("Could not send the permission denial.", exc_info=True)
+                        return
             logger.warning("CheckFailure: %s", exception)
         elif isinstance(exception, commands.DisabledCommand):
             logger.info(

@@ -8,6 +8,7 @@ from pathlib import Path
 import aiohttp
 import discord
 
+import teachforth_perms
 import teachforth_portal
 
 try:
@@ -33,30 +34,7 @@ SPECS = {
     "TeachForth Session Lead": 0xE0AAFF,
 }
 STAFF_COMMANDS = ("teachforthlookup", "diagnostic", "projects", "project", "reports", "chapters", "helpmenusend")
-COMMAND_LEVELS = {
-    "help": "REGULAR",
-    "about": "REGULAR",
-    "reply": "SUPPORTER",
-    "close": "SUPPORTER",
-    "note": "SUPPORTER",
-    "snippet": "SUPPORTER",
-    "logs": "SUPPORTER",
-    "contact": "SUPPORTER",
-    "claim": "SUPPORTER",
-    "diagnostic": "SUPPORTER",
-    "projects": "SUPPORTER",
-    "project": "SUPPORTER",
-    "project view": "SUPPORTER",
-    "project create": "SUPPORTER",
-    "reports": "SUPPORTER",
-    "chapters": "SUPPORTER",
-    "helpmenusend": "SUPPORTER",
-    "teachforthlookup": "SUPPORTER",
-    "block": "MODERATOR",
-    "move": "MODERATOR",
-    "activity": "ADMINISTRATOR",
-    "permissions": "OWNER",
-}
+COMMAND_LEVELS = teachforth_perms.command_levels()
 STAFF_CATEGORY_ROLES = (
     "TeachForth Teacher",
     "TeachForth Chapter Lead",
@@ -119,6 +97,7 @@ async def sync(bot):
             continue
         changed += await apply_account(bot, guild.id, member.id, [], roles, managed)
     logger.info("TeachForth role sync finished. phase=%s accounts=%s changed=%s", phase, len(people), changed)
+    teachforth_perms.apply_text(bot)
     await apply_levels(bot, roles)
 
 

@@ -120,9 +120,10 @@ class TeachForth(commands.Cog):
         except discord.HTTPException:
             logger.warning("Slash followup failed for %s", name)
 
-    @commands.command(name="login")
+    @commands.command(name="login", usage="[code]")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def login(self, ctx, code: str = ""):
-        """Register this Discord account. `.login CODE` also finishes a browser login."""
+        """Register a teacher for the helpdesk. A student cannot register."""
         if ctx.guild is None:
             return await ctx.send("Run that in the TeachForth server.")
         app = getattr(self.bot, "_teachforth_app", None)

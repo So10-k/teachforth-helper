@@ -16,6 +16,8 @@ from typing import Union
 import typing
 
 import discord
+
+import teachforth_perms
 from discord.enums import ActivityType, Status
 from discord.ext import commands, tasks
 from discord.ext.commands.view import StringView
@@ -67,7 +69,7 @@ class ModmailHelpCommand(commands.HelpCommand):
             if perm_level is PermissionLevel.INVALID:
                 format_ = f"`{prefix + cmd.qualified_name}` "
             else:
-                format_ = f"`[{perm_level}] {prefix + cmd.qualified_name}` "
+                format_ = f"`[{teachforth_perms.label(perm_level)}] {prefix + cmd.qualified_name}` "
 
             format_ += f"- {cmd.short_doc}\n" if cmd.short_doc else "- *No description.*\n"
             if not format_.strip():
@@ -145,7 +147,7 @@ class ModmailHelpCommand(commands.HelpCommand):
             return
         perm_level = self.context.bot.command_perm(topic.qualified_name)
         if perm_level is not PermissionLevel.INVALID:
-            perm_level = f"{perm_level.name} [{perm_level}]"
+            perm_level = f"{teachforth_perms.label(perm_level)} [{int(perm_level)}]"
         else:
             perm_level = "NONE"
 
@@ -1279,27 +1281,23 @@ class Utility(commands.Cog):
     @checks.has_permissions(PermissionLevel.OWNER)
     async def permissions(self, ctx):
         """
-        Set the permissions for Modmail commands.
+        Set who can run each TeachForth command.
 
-        You may set permissions based on individual command names, or permission
-        levels.
+        Levels, from the website role:
+            - **Owner** [5] bot owner. `.perms`, config, and plugins.
+            - **Admin** [4] TeachForth Admin. Class power and every desk command.
+            - **Chapter Lead** [3] can block and move tickets.
+            - **Teacher** [2] TeachForth Teacher and the current session lead.
+            - **Student** [1] everyone. Help and about only.
 
-        Acceptable permission levels are:
-            - **Owner** [5] (absolute control over the bot)
-            - **Administrator** [4] (administrative powers such as setting activities)
-            - **Moderator** [3] (ability to block)
-            - **Supporter** [2] (access to core Modmail supporting functions)
-            - **Regular** [1] (most basic interactions such as help and about)
+        Session lead is not a separate level. They use Teacher commands, and only the live session lead or an admin can use `/home`.
 
-        By default, owner is set to the absolute bot owner and regular is `@everyone`.
-
-        To set permissions, see `{prefix}help permissions add`; and to change permission level for specific
-        commands see `{prefix}help permissions override`.
-
-        Note: You will still have to manually give/take permission to the Modmail
-        category to users/roles.
+        Examples:
+        - `{prefix}perms override reply teacher`
+        - `{prefix}perms add level "chapter lead" @TeachForth Chapter Lead`
+        - `{prefix}perms get level teacher`
         """
-        await ctx.send_help(ctx.command)
+        await ctx.send(embed=teachforth_perms.matrix_embed(self.bot.main_color))
 
     @staticmethod
     def _verify_user_or_role(user_or_role):
@@ -1314,19 +1312,7 @@ class Utility(commands.Cog):
 
     @staticmethod
     def _parse_level(name):
-        name = name.upper()
-        try:
-            return PermissionLevel[name]
-        except KeyError:
-            pass
-        transform = {
-            "1": PermissionLevel.REGULAR,
-            "2": PermissionLevel.SUPPORTER,
-            "3": PermissionLevel.MODERATOR,
-            "4": PermissionLevel.ADMINISTRATOR,
-            "5": PermissionLevel.OWNER,
-        }
-        return transform.get(name, PermissionLevel.INVALID)
+        return teachforth_perms.parse_level(name)
 
     @permissions.command(name="override")
     @checks.has_permissions(PermissionLevel.OWNER)
@@ -1361,7 +1347,7 @@ class Utility(commands.Cog):
             embed = discord.Embed(
                 title="Error",
                 color=self.bot.error_color,
-                description=f"The referenced level does not exist: `{level_name}`.",
+                description=f"`{level_name}` is not a level. Use {teachforth_perms.names_line()}.",
             )
         else:
             logger.info(
@@ -1375,8 +1361,8 @@ class Utility(commands.Cog):
             embed = discord.Embed(
                 title="Success",
                 color=self.bot.main_color,
-                description="Successfully set command permission level for "
-                f"`{command.qualified_name}` to `{level.name}`.",
+                description="Set "
+                f"`{command.qualified_name}` to {teachforth_perms.label(level)}.",
             )
         return await ctx.send(embed=embed)
 
