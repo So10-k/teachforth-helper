@@ -52,7 +52,11 @@ COMMANDS = {
     "unclaim": ("SUPPORTER", "Release this ticket.", ""),
     "notify": ("SUPPORTER", "Ping someone when this student writes again.", "[user or role]"),
     "subscribe": ("SUPPORTER", "Follow this ticket.", "[user or role]"),
-    "diagnostic": ("SUPPORTER", "Ask the student for the support code from their profile.", ""),
+    "diagnostic": ("SUPPORTER", "Ask the student to share browser and device details. Cookie values are not sent.", ""),
+    "qualification": ("SUPPORTER", "Route tickets by topic. Add and remove are for a chapter lead.", "add|remove|list"),
+    "qualification add": ("MODERATOR", "Give a staff member a qualification.", "<user> <ide|github|class|account|homework|general>"),
+    "qualification remove": ("MODERATOR", "Take a qualification away.", "<user> <topic>"),
+    "qualification list": ("SUPPORTER", "List qualifications. A teacher sees their own.", "[user]"),
     "projects": ("SUPPORTER", "List projects for the account that consented in this ticket.", ""),
     "project": ("SUPPORTER", "View or create a project for the consented account.", "view <id>"),
     "project view": ("SUPPORTER", "Show that project's files in this staff channel.", "<id>"),
@@ -149,7 +153,7 @@ def matrix_embed(color):
         name="Commands",
         value=(
             "`reply <message>` · `close [30m] [message]` · `note <message>` · `contact <user> [message]`\n"
-            "`diagnostic` · `projects` · `project view <id>` · `project create [blank|python|web] [title]`\n"
+            "`diagnostic` · `qualification add <user> <topic>` · `projects` · `project view <id>`\n"
             "`block <user> [duration] [reason]` · `move <category>` · `helpmenusend [type]`"
         ),
         inline=False,

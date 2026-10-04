@@ -6,6 +6,7 @@ import re
 import discord
 from discord.ext import commands
 
+import teachforth_chat
 import teachforth_plugins
 import teachforth_portal
 import teachforth_support
@@ -32,6 +33,29 @@ def _claim(interaction):
         return False
     cog._seen.add(interaction.id)
     return True
+
+
+class DeviceView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Allow device details", custom_id="tfd:device-allow", style=discord.ButtonStyle.primary)
+    async def allow(self, interaction, _button):
+        if not _claim(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        text = await teachforth_chat.grant_from_discord(
+            interaction.client, interaction.user, True, str(getattr(interaction, "locale", "") or "")
+        )
+        await interaction.followup.send(text, ephemeral=True)
+
+    @discord.ui.button(label="Not now", custom_id="tfd:device-deny", style=discord.ButtonStyle.secondary)
+    async def deny(self, interaction, _button):
+        if not _claim(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        text = await teachforth_chat.grant_from_discord(interaction.client, interaction.user, False)
+        await interaction.followup.send(text, ephemeral=True)
 
 
 class SupportView(discord.ui.View):
@@ -87,32 +111,23 @@ class Diagnostic(commands.Cog):
 
     async def cog_load(self):
         self.bot.add_view(SupportView())
+        self.bot.add_view(DeviceView())
+
+    def consent_view(self):
+        return DeviceView()
 
     @commands.command(name="diagnostic")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def diagnostic(self, ctx):
-        """Ask the student for a support code from their profile."""
+        """Ask the student to share browser and device details for this ticket."""
         thread = await self._thread(ctx)
         if thread is None:
             return
-        recipient = thread.recipient
-        embed = discord.Embed(
-            title="Support code",
-            description=(
-                "Open your TeachForth profile and press **Support code**.\n"
-                "Then press the button here and paste it.\n\n"
-                "That lets your teacher see your account for this ticket only. "
-                "It is not your password, and it expires in 15 minutes."
-            ),
-            color=COLOR,
-        )
-        embed.set_footer(text="TeachForth Help")
-        teachforth_support.note_teacher(thread.channel.id, ctx.author.id, recipient.id)
-        try:
-            await recipient.send(embed=embed, view=SupportView())
-        except discord.HTTPException:
-            return await ctx.send("I could not DM them. Ask them to open a DM with the bot.")
-        await ctx.send(embed=self._embed("Asked for a support code", f"{recipient} can paste it from their profile."))
+        await teachforth_chat.request_diagnostic(self.bot, thread, ctx.author)
+        await ctx.send(embed=self._embed(
+            "Asked for device details",
+            "They can allow it in Discord or in the IDE chat. Cookie values are not sent.",
+        ))
 
     async def redeem(self, interaction, code):
         thread = await self.bot.threads.find(recipient=interaction.user)

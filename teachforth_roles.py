@@ -33,7 +33,7 @@ SPECS = {
     "TeachForth Admin": 0x3C096C,
     "TeachForth Session Lead": 0xE0AAFF,
 }
-STAFF_COMMANDS = ("teachforthlookup", "diagnostic", "projects", "project", "reports", "chapters", "helpmenusend")
+STAFF_COMMANDS = ("teachforthlookup", "diagnostic", "projects", "project", "reports", "chapters", "helpmenusend", "qualification")
 COMMAND_LEVELS = teachforth_perms.command_levels()
 STAFF_CATEGORY_ROLES = (
     "TeachForth Teacher",

@@ -398,6 +398,8 @@ async def register(request):
 async def desk(request):
     user = require_staff(request)
     bot = request.app["bot"]
+    import teachforth_chat
+    viewer = str(user.get("id") or "")
     groups = {}
     urgent = []
     for thread in list(bot.threads):
@@ -406,10 +408,13 @@ async def desk(request):
         recipient = getattr(thread, "recipient", None)
         name = getattr(recipient, "name", None) or str(getattr(thread, "id", "Student"))
         meta = teachforth_intake.get(getattr(recipient, "id", ""))
-        topic = meta.get("plugin") or str(thread.channel.name).split("-", 1)[0]
-        if topic not in teachforth_plugins.BY_ID:
+        routed = teachforth_chat.topic_for(thread.channel.id)
+        if routed and not await teachforth_chat.can_see(bot, viewer, routed):
+            continue
+        topic = routed or meta.get("plugin") or str(thread.channel.name).split("-", 1)[0]
+        if topic not in teachforth_plugins.BY_ID and topic not in teachforth_chat.TOPIC_IDS:
             topic = "open"
-        label = teachforth_plugins.label(topic)
+        label = teachforth_chat.topic_label(topic) if topic in teachforth_chat.TOPIC_IDS else teachforth_plugins.label(topic)
         status = meta.get("status") or "open"
         line = f'<p><a href="/thread/{int(thread.channel.id)}"><strong>{e(name)}</strong></a> · {e(label)} · <span class="tag">{e(status)}</span></p>'
         if meta.get("priority") == "high":
@@ -418,7 +423,13 @@ async def desk(request):
     listing = ""
     if urgent:
         listing += f"<h2>Blocked while class is on</h2>{''.join(urgent)}"
+    for topic, label, _blurb in teachforth_chat.TOPICS:
+        rows = groups.get(topic) or []
+        if rows:
+            listing += f"<h2>{e(label)}</h2>{''.join(rows)}"
     for topic in list(teachforth_plugins.BY_ID) + ["open"]:
+        if topic in teachforth_chat.TOPIC_IDS:
+            continue
         rows = groups.get(topic) or []
         if rows and topic != "open":
             listing += f"<h2>{e(teachforth_plugins.label(topic))}</h2>{''.join(rows)}"
@@ -433,7 +444,8 @@ async def desk(request):
     body = f"""
     {nav("desk")}
     <div class="card"><h1>Open tickets</h1>{listing}</div>
-    <div class="card"><h2>Desk</h2><p>Category: {e(category)}. Prefix <code>.</code>. Setup is {e(setup)}</p></div>"""
+    <div class="card"><h2>Desk</h2><p>Category: {e(category)}. Prefix <code>.</code>. Setup is {e(setup)}</p>
+    <p>Tickets opened from the IDE are grouped by qualification. A teacher sees only topics they hold. Admins see every ticket.</p></div>"""
     return web.Response(text=page("Desk", body, user.get("name")), content_type="text/html")
 
 
@@ -447,6 +459,10 @@ async def thread_page(request):
             thread = item
             break
     if thread is None:
+        return web.Response(text=page("Missing", '<div class="card"><p>That conversation is closed or gone.</p></div>'), content_type="text/html", status=404)
+    import teachforth_chat
+    routed = teachforth_chat.topic_for(channel_id)
+    if routed and not await teachforth_chat.can_see(bot, str(user.get("id") or ""), routed):
         return web.Response(text=page("Missing", '<div class="card"><p>That conversation is closed or gone.</p></div>'), content_type="text/html", status=404)
     messages = []
     async for message in thread.channel.history(limit=40, oldest_first=False):
@@ -938,6 +954,8 @@ def build_app(bot):
     app["bot"] = bot
     app["codes"] = {}
     app["states"] = {}
+    import teachforth_chat
+    teachforth_chat.add_routes(app)
     app.add_routes([
         web.get("/", login_page),
         web.get("/login/device", device_page),
