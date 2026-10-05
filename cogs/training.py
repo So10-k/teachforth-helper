@@ -38,7 +38,8 @@ def view_for(step, user_id, index):
         view.add_item(TrainButton("Open the practice ticket", f"tft:open:{user_id}", discord.ButtonStyle.primary))
     elif kind == "lab":
         view.add_item(TrainButton("Show the command", f"tft:show:{user_id}", discord.ButtonStyle.secondary))
-        view.add_item(TrainButton("Open the practice ticket", f"tft:open:{user_id}", discord.ButtonStyle.primary))
+        if step.get("where") != "sandbox":
+            view.add_item(TrainButton("Open the practice ticket", f"tft:open:{user_id}", discord.ButtonStyle.primary))
     elif kind == "finish":
         view.add_item(TrainButton("Restore my access", f"tft:end:{user_id}", discord.ButtonStyle.success))
     return view if view.children else None
@@ -50,10 +51,26 @@ def stop_view(user_id):
     return view
 
 
+def _typed(ctx):
+    invoked = (getattr(ctx, "invoked_with", None) or "").lower()
+    command = getattr(ctx.command, "name", "") or ""
+    names = {command.lower()}
+    names.update(item.lower() for item in (getattr(ctx.command, "aliases", None) or []))
+    parent = getattr(getattr(ctx.command, "parent", None), "name", None)
+    if parent:
+        names.add(str(parent).lower())
+    return bool(invoked) and invoked in names
+
+
 async def guard(ctx):
     command = getattr(ctx.command, "name", "") or ""
     channel_id = getattr(ctx.channel, "id", 0)
+    if training.is_sandbox(channel_id):
+        return False
     if not training.is_ticket(channel_id):
+        return True
+    # Help lists every command by running its checks. Do not talk, and do not hide the list.
+    if not _typed(ctx):
         return True
     if command in training.BLOCKED:
         await ctx.send("That command is blocked in a practice ticket. Finish the pathway, or a lead can run `.train end`.")
@@ -72,13 +89,18 @@ class Training(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._seen = set()
+        self._graded = set()
+        self._calls = {}
         self._lock = asyncio.Lock()
 
     async def cog_load(self):
         self.bot.add_check(guard)
+        self.bot.before_invoke(self._remember)
 
     async def cog_unload(self):
         self.bot.remove_check(guard)
+        if getattr(self.bot, "_before_invoke", None) == self._remember:
+            self.bot._before_invoke = None
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -98,34 +120,40 @@ class Training(commands.Cog):
     async def on_message(self, message):
         if message.author.bot or message.guild is None:
             return
-        if not training.is_ticket(message.channel.id):
+        content = message.content or ""
+        kind = training._channel_kind(message.channel.id)
+        if not kind:
             return
-        row = self._by_ticket(message.channel.id)
-        if row is None or int(row["user_id"]) != message.author.id:
+        name, rest = training.split_command(self._prefixes(), content)
+        saved = self._calls.get(message.id)
+        if saved and not name:
+            name, rest = saved
+        if kind == "sandbox":
+            await self._grade_sandbox(message, name, rest)
             return
-        step = training.step_at(int(row.get("step") or 0))
-        name, rest = training.split_command(self.bot.prefix, message.content)
-        result = training.grade(step, name, rest)
-        if result == "no":
-            return
-        if result == "short":
-            await message.channel.send(step.get("short") or "That command needs a real sentence after it.")
-            return
-        if result == "extra":
-            await message.channel.send(step.get("extra") or "Run that command with nothing after it.")
-            return
-        await message.channel.send("That counted. The pathway moved on.")
-        await self._advance(message.guild, row)
+        await self._grade(message, name, rest)
 
-    @commands.group(name="train", invoke_without_command=True, usage="<user>")
+    @commands.Cog.listener()
+    async def on_command_completion(self, ctx):
+        saved = self._calls.pop(getattr(ctx.message, "id", 0), None)
+        if not saved:
+            return
+        await self._grade(ctx.message, saved[0], saved[1])
+
+    @commands.group(name="train", invoke_without_command=True, usage="<user> [teacher|chapter|admin|session]")
     @checks.has_permissions(PermissionLevel.MODERATOR)
-    async def train(self, ctx, member: discord.Member = None):
-        """Hide the server and open a private desk lesson for this person."""
+    async def train(self, ctx, member: discord.Member = None, track: str = "teacher"):
+        """Hide the server and open a private lesson for this person."""
         if member is None:
-            return await ctx.send("Use `.train @user`. A chapter lead or an admin can start it.")
+            return await ctx.send(
+                "Use `.train @user teacher`, `.train @user chapter`, `.train @user admin`, or `.train @user session`."
+            )
         if ctx.invoked_subcommand is not None:
             return
-        await self._begin(ctx, member)
+        picked = training.normalize_track(track)
+        if not picked:
+            return await ctx.send("Track is teacher, chapter, admin, or session.")
+        await self._begin(ctx, member, picked)
 
     @train.command(name="end", usage="<user>")
     @checks.has_permissions(PermissionLevel.MODERATOR)
@@ -144,9 +172,10 @@ class Training(commands.Cog):
             return await ctx.send(embed=self._embed("Desk training", "Nobody is in training."))
         lines = []
         for row in rows[:20]:
-            step = training.step_at(int(row.get("step") or 0))
+            step = training.step_at(int(row.get("step") or 0), row.get("track") or "teacher")
             title = step.get("title") if step else "Done"
-            lines.append(f"{row.get('name') or row.get('user_id')} · {title}")
+            label = training.TRACKS.get(row.get("track") or "teacher", {}).get("label", "Teacher")
+            lines.append(f"{row.get('name') or row.get('user_id')} · {label} · {title}")
         await ctx.send(embed=self._embed("Desk training", "\n".join(lines)))
 
     async def handle(self, interaction):
@@ -178,9 +207,10 @@ class Training(commands.Cog):
             await self._finish(guild, user_id, interaction.user, announce=interaction)
             return
         if action == "show":
-            step = training.step_at(int(row.get("step") or 0))
+            step = training.step_at(int(row.get("step") or 0), row.get("track") or "teacher")
             shown = (step or {}).get("show") or "Stay on the pathway."
-            await self._say(interaction, f"In the practice ticket, run:\n`{shown}`")
+            where = "#training-sandbox" if (step or {}).get("where") == "sandbox" else "the practice ticket"
+            await self._say(interaction, f"In {where}, run:\n`{shown}`")
             return
         if action == "open":
             await interaction.response.defer()
@@ -191,9 +221,11 @@ class Training(commands.Cog):
             return
         await self._say(interaction, "That button is not used anymore.")
 
-    async def _begin(self, ctx, member):
+    async def _begin(self, ctx, member, track="teacher"):
         if member.bot:
             return await ctx.send("Pick a person, not a bot.")
+        if track == "admin" and not await self._admin(ctx.author):
+            return await ctx.send("Admin training is for an admin.")
         if training.get(member.id):
             return await ctx.send(f"{member.display_name} is already in training. `.train end @{member.display_name}` restores them.")
         if await self.bot.is_owner(member) and not await self.bot.is_owner(ctx.author):
@@ -205,7 +237,7 @@ class Training(commands.Cog):
             return await ctx.send("I need Manage Channels and Manage Roles before I can hide the server.")
         await ctx.send(f"Setting up a private desk for {member.display_name}. This can take a minute.")
         try:
-            row = await self._isolate(ctx.guild, member, ctx.author)
+            row = await self._isolate(ctx.guild, member, ctx.author, track)
         except discord.HTTPException as err:
             logger.exception("Training setup failed")
             return await ctx.send(f"I could not finish the private desk, so I put their access back. {err}")
@@ -215,7 +247,7 @@ class Training(commands.Cog):
         link = f"https://discord.com/channels/{ctx.guild.id}/{row['path_id']}"
         try:
             await member.send(
-                "Your TeachForth desk training is open. Roles are saved, and the other channels are hidden.\n"
+                f"Your {training.TRACKS[track]['label']} training is open. Roles are saved, and the other channels are hidden.\n"
                 f"Start here: {link}\n"
                 "Read #training-info, then use the buttons in #training-pathway. Plan on about 30 minutes."
             )
@@ -223,7 +255,7 @@ class Training(commands.Cog):
             await ctx.send(f"I could not DM {member.display_name}. Send them this: {link}")
         await ctx.send(f"Training is open for {member.display_name}. `.train end {member.mention}` restores their access.")
 
-    async def _isolate(self, guild, member, trainer):
+    async def _isolate(self, guild, member, trainer, track="teacher"):
         role = await self._role(guild)
         original = [item.id for item in member.roles if not item.is_default() and item.id != role.id]
         category = None
@@ -247,6 +279,18 @@ class Training(commands.Cog):
                 overwrites={member: discord.PermissionOverwrite(read_messages=True, send_messages=False, read_message_history=True)},
                 reason="TeachForth desk training",
             )
+            sandbox = None
+            if training.TRACKS.get(track, {}).get("sandbox"):
+                sandbox = await guild.create_text_channel(
+                    "training-sandbox",
+                    category=category,
+                    overwrites={member: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)},
+                    reason="TeachForth desk training",
+                )
+                await sandbox.send(embed=self._embed(
+                    "Sandbox",
+                    "Commands here do not touch the live desk. Run the command from #training-pathway. A wrong reason stays wrong.",
+                ))
             denied = await self._hide_elsewhere(guild, member, category.id)
             removed = await self._drop_roles(member)
             try:
@@ -261,6 +305,7 @@ class Training(commands.Cog):
             "user_id": member.id,
             "name": member.display_name,
             "trainer_id": trainer.id,
+            "track": track,
             "step": 0,
             "roles": original,
             "removed": removed,
@@ -268,6 +313,7 @@ class Training(commands.Cog):
             "category_id": category.id,
             "info_id": info.id,
             "path_id": pathway.id,
+            "sandbox_id": sandbox.id if sandbox is not None else 0,
             "path_message": 0,
             "ticket_id": 0,
             "old_channel_id": 0,
@@ -339,7 +385,7 @@ class Training(commands.Cog):
                 "This is a real desk channel. You are also the student, so replies and the diagnostic prompt can arrive in your DMs.\n\n"
                 "Run the command from #training-pathway here. Do not close this channel.",
             ))
-        step = training.step_at(int(row.get("step") or 0))
+        step = training.step_at(int(row.get("step") or 0), row.get("track") or "teacher")
         if step and step.get("kind") == "open":
             await self._advance(guild, row)
             return
@@ -351,7 +397,7 @@ class Training(commands.Cog):
         if index != int(row.get("step") or 0):
             await self._say(interaction, "That card already moved on. Use the latest one in #training-pathway.")
             return
-        step = training.step_at(index)
+        step = training.step_at(index, row.get("track") or "teacher")
         choice = next((item for item in (step or {}).get("choices") or [] if item["id"] == parts[4]), None)
         if choice is None:
             await self._say(interaction, "That answer is not on this step.")
@@ -366,8 +412,10 @@ class Training(commands.Cog):
         row["step"] = int(row.get("step") or 0) + 1
         training.put(row["user_id"], row)
         await self._post_path(guild, row)
-        step = training.step_at(row["step"])
-        channel = guild.get_channel(int(row.get("ticket_id") or 0)) if guild else None
+        track = row.get("track") or "teacher"
+        step = training.step_at(row["step"], track)
+        target_id = int(row.get("sandbox_id") or 0) if step and step.get("where") == "sandbox" else int(row.get("ticket_id") or 0)
+        channel = guild.get_channel(target_id) if guild else None
         if channel is not None and step and step.get("show"):
             await channel.send(embed=self._embed(step["title"], f"Run this here:\n`{step['show']}`"))
 
@@ -375,15 +423,18 @@ class Training(commands.Cog):
         channel = guild.get_channel(int(row.get("path_id") or 0))
         if channel is None:
             return
-        step = training.step_at(int(row.get("step") or 0))
+        track = row.get("track") or "teacher"
+        steps = training.steps_for(track)
+        step = training.step_at(int(row.get("step") or 0), track)
         if step is None:
-            step = training.STEPS[-1]
+            step = steps[-1]
         embed = self._embed(step["title"], step["body"])
         if step.get("prompt"):
             embed.add_field(name="Check", value=step["prompt"][:1024], inline=False)
         if step.get("show"):
-            embed.add_field(name="Run this in the practice ticket", value=f"`{step['show']}`", inline=False)
-        embed.set_footer(text=f"Step {int(row.get('step') or 0) + 1} of {len(training.STEPS)} · about {training.minutes_left(int(row.get('step') or 0))} min if you read")
+            place = "#training-sandbox" if step.get("where") == "sandbox" else "the practice ticket"
+            embed.add_field(name=f"Run this in {place}", value=f"`{step['show']}`", inline=False)
+        embed.set_footer(text=f"{training.TRACKS[track]['label']} · step {int(row.get('step') or 0) + 1} of {len(steps)} · about {training.minutes_left(int(row.get('step') or 0), track)} min if you read")
         view = view_for(step, row["user_id"], int(row.get("step") or 0))
         message = None
         if row.get("path_message"):
@@ -542,25 +593,104 @@ class Training(commands.Cog):
         return f"{base[:88]} {str(member.id)[-4:]}"
 
     def _by_ticket(self, channel_id):
+        return self._by_channel(channel_id)
+
+    def _by_channel(self, channel_id):
+        wanted = int(channel_id)
         for row in training.load().get("users", {}).values():
-            if int(row.get("ticket_id") or 0) == int(channel_id):
+            if wanted in {int(row.get("ticket_id") or 0), int(row.get("sandbox_id") or 0)}:
                 return row
         return None
 
+    async def _admin(self, member):
+        if await self.bot.is_owner(member):
+            return True
+        if getattr(member.guild_permissions, "administrator", False):
+            return True
+        return any(role.name == "TeachForth Admin" for role in getattr(member, "roles", []))
+
+    def _prefixes(self):
+        raw = getattr(self.bot, "prefix", ".") or "."
+        if isinstance(raw, (list, tuple)):
+            return tuple(item for item in raw if item) + (".",)
+        return (str(raw), ".")
+
+    async def _remember(self, ctx):
+        content = ctx.message.content or ""
+        name, rest = training.split_command(self._prefixes(), content)
+        if not name and ctx.command is not None:
+            name = ctx.command.name
+        self._calls[ctx.message.id] = (name, rest)
+        if len(self._calls) > 200:
+            for key in list(self._calls)[:100]:
+                self._calls.pop(key, None)
+
+    async def _grade_sandbox(self, message, name, rest):
+        row = self._by_channel(message.channel.id)
+        if row is None or int(row["user_id"]) != message.author.id:
+            return
+        step = training.step_at(int(row.get("step") or 0), row.get("track") or "teacher")
+        on_lab = bool(step and step.get("where") == "sandbox")
+        if not name and not on_lab:
+            return
+        result = training.grade(step, name, rest) if on_lab else "no"
+        if message.id in self._graded:
+            return
+        if result != "no":
+            self._graded.add(message.id)
+        await message.channel.send(training.sandbox_reply(name, result, step))
+        if result == "pass":
+            await self._advance(message.guild, row)
+
+    async def _grade(self, message, name, rest):
+        async with self._lock:
+            if message.id in self._graded:
+                return
+            row = self._by_channel(message.channel.id)
+            if row is None or int(row.get("user_id") or 0) != message.author.id:
+                return
+            step = training.step_at(int(row.get("step") or 0), row.get("track") or "teacher")
+            result = training.grade(step, name, rest)
+            if result == "no":
+                return
+            self._graded.add(message.id)
+            if len(self._graded) > 400:
+                self._graded = set(list(self._graded)[-200:])
+        if result == "short":
+            await message.channel.send(step.get("short") or "That command needs a real sentence after it.")
+            return
+        if result == "extra":
+            await message.channel.send(step.get("extra") or "Run that command with nothing after it.")
+            return
+        if result == "abuse":
+            await message.channel.send(step.get("abuse_why") or "That is the abuse this step is about.")
+            return
+        await message.channel.send("That counted. The pathway moved on.")
+        await self._advance(message.guild, row)
+
     async def _say(self, interaction, text, view=None):
-        if interaction.response.is_done():
-            await interaction.followup.send(text, ephemeral=True, view=view)
-        else:
-            await interaction.response.send_message(text, ephemeral=True, view=view)
+        kwargs = {"ephemeral": True}
+        if view is not None:
+            kwargs["view"] = view
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(text, **kwargs)
+            else:
+                await interaction.response.send_message(text, **kwargs)
+        except discord.HTTPException:
+            logger.debug("Could not answer a training button.", exc_info=True)
 
     async def _announce(self, target, text):
-        if isinstance(target, discord.Interaction):
-            if target.response.is_done():
-                await target.followup.send(text)
-            else:
-                await target.response.send_message(text)
-            return
-        await target.send(text)
+        try:
+            if isinstance(target, discord.Interaction):
+                if target.response.is_done():
+                    await target.followup.send(text)
+                else:
+                    await target.response.send_message(text)
+                return
+            await target.send(text)
+        except discord.HTTPException:
+            logger.debug("Could not announce the training result.", exc_info=True)
 
     def _embed(self, title, description):
         embed = discord.Embed(title=str(title)[:256], description=str(description)[:4000], color=COLOR)

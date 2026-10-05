@@ -75,7 +75,7 @@ COMMANDS = {
     "activity": ("ADMINISTRATOR", "Set the bot status.", "<text>"),
     "enable": ("ADMINISTRATOR", "Open the desk to new tickets.", ""),
     "disable": ("ADMINISTRATOR", "Pause the desk.", ""),
-    "train": ("MODERATOR", "Start a private desk training for a staff member.", "<user>"),
+    "train": ("MODERATOR", "Start a private training. Tracks: teacher, chapter, admin, session.", "<user> [teacher|chapter|admin|session]"),
     "train end": ("MODERATOR", "Restore the roles and channels saved at the start of training.", "<user>"),
     "train status": ("MODERATOR", "Show who is in desk training.", ""),
     "permissions": ("OWNER", "See and edit who can run each command.", ""),

@@ -1972,6 +1972,13 @@ class ModmailBot(commands.Bot):
                 )
             )
         elif isinstance(exception, commands.CheckFailure):
+            try:
+                import teachforth_training
+
+                if teachforth_training.is_sandbox(getattr(context.channel, "id", 0)):
+                    return
+            except Exception:
+                logger.debug("Sandbox command was not silenced.", exc_info=True)
             for check in context.command.checks:
                 if not await check(context):
                     if hasattr(check, "fail_msg"):
