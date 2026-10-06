@@ -660,7 +660,7 @@ async def plugins_page(request):
 
 
 def nav(active=""):
-    items = [("desk", "Open"), ("plugins", "Helpers"), ("lookup", "Lookup"), ("snippets", "Snippets"), ("blocked", "Blocked"), ("logs", "Logs"), ("data", "Database")]
+    items = [("desk", "Open"), ("plugins", "Helpers"), ("lookup", "Lookup"), ("snippets", "Snippets"), ("blocked", "Blocked"), ("logs", "Logs"), ("db/", "Database")]
     links = []
     for path, label in items:
         kind = "button" if path == active else "button ghost"
@@ -955,10 +955,13 @@ def build_app(bot):
     app["codes"] = {}
     app["states"] = {}
     import teachforth_chat
-    import teachforth_data
     teachforth_chat.add_routes(app)
-    teachforth_data.add_routes(app)
+
+    async def database_redirect(_request):
+        raise web.HTTPFound("/db/")
+
     app.add_routes([
+        web.get("/data", database_redirect),
         web.get("/", login_page),
         web.get("/login/device", device_page),
         web.get("/login/poll", poll),
